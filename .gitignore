@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-link
+.installed.cfg
+MANIFEST
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# 测试 & 覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# 类型检查
+.mypy_cache/
+.pyre/
+.pytype/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 日志
+*.log
+*.jsonl
+
+# 临时测试数据
+tmp/
+
+# 本地配置（非示例文件）
+sources.yaml
+.mcp.json

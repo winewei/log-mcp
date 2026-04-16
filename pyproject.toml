@@ -1,0 +1,17 @@
+[project]
+name = "log-mcp"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.2",
+    "mcp>=1.0",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["log_mcp*"]

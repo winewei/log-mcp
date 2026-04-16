@@ -1,0 +1,40 @@
+sources:
+  # 示例 1：Python structlog 输出的 JSONL，主文件 + .1/.2 数字轮转
+  api-server:
+    description: "后端 API 服务请求日志"
+    path: "/path/to/logs/request.jsonl"
+    rotation: numeric          # numeric: .1 .2 .3 | date: .2026-04-04 | none
+    format: jsonl
+    field_map:
+      timestamp: ts            # 源字段名 → MCP 标准字段名
+      level: level
+      message: event
+
+  # 示例 2：后台任务 / 调度器日志
+  worker:
+    description: "后台异步任务执行日志"
+    path: "/path/to/logs/worker.jsonl"
+    rotation: numeric
+    format: jsonl
+    field_map:
+      timestamp: ts
+      level: level
+      message: event
+
+  # 示例 3：Go zerolog 输出，按日期命名文件
+  go-service:
+    description: "Go 微服务运行日志"
+    path: "/path/to/logs/service.jsonl"
+    rotation: date             # date: service.2026-04-04.jsonl 格式
+    format: jsonl
+    field_map:
+      timestamp: time
+      level: severity
+      message: msg
+
+  # 示例 4：纯文本 access log
+  nginx:
+    description: "Nginx 访问日志"
+    path: "/var/log/nginx/access.log"
+    rotation: date
+    format: text
