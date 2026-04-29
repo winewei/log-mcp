@@ -52,12 +52,12 @@ AI Agent（如 Claude Code）在辅助开发与测试时，频繁需要回答以
 
 ```bash
 # 从源码安装（克隆后）
-git clone <repo-url> log-mcp
+git clone https://github.com/winewei/log-mcp.git log-mcp
 cd log-mcp
 uv tool install .
 
 # 或直接从 git 安装
-uv tool install git+<repo-url>
+uv tool install git+https://github.com/winewei/log-mcp.git
 
 # 升级
 uv tool upgrade log-mcp
@@ -71,7 +71,7 @@ uv tool uninstall log-mcp
 **备选：pip 开发模式**
 
 ```bash
-git clone <repo-url> log-mcp
+git clone https://github.com/winewei/log-mcp.git log-mcp
 cd log-mcp
 pip install -e .
 ```

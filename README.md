@@ -52,12 +52,12 @@ Requires Python 3.11+. Dependencies are pulled automatically: `mcp` / `duckdb` /
 
 ```bash
 # From source (after cloning)
-git clone <repo-url> log-mcp
+git clone https://github.com/winewei/log-mcp.git log-mcp
 cd log-mcp
 uv tool install .
 
 # Or straight from git
-uv tool install git+<repo-url>
+uv tool install git+https://github.com/winewei/log-mcp.git
 
 # Upgrade
 uv tool upgrade log-mcp
@@ -71,7 +71,7 @@ After install, the `log-mcp` command is on your PATH at `~/.local/bin/log-mcp` (
 **Alternative: pip editable install**
 
 ```bash
-git clone <repo-url> log-mcp
+git clone https://github.com/winewei/log-mcp.git log-mcp
 cd log-mcp
 pip install -e .
 ```
