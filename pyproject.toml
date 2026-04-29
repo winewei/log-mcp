@@ -1,6 +1,6 @@
 [project]
 name = "log-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "通用日志查询 MCP Server，为 AI Agent 提供基于 DuckDB SQL 的结构化日志查询、聚合与跨源时间线重建。"
 readme = "README.md"
 license = "MIT"

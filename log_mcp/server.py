@@ -6,7 +6,7 @@ import difflib
 import json
 import logging
 import re
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -223,7 +223,6 @@ def _file_status(path: str) -> dict:
     stat = p.stat()
     size = stat.st_size
     mtime = stat.st_mtime
-    from datetime import datetime
     last_modified = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
     status = "empty" if size == 0 else "ok"
     return {"status": status, "file_size_bytes": size, "last_modified": last_modified}

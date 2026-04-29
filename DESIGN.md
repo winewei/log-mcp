@@ -429,7 +429,7 @@ dependencies = [
 ]
 ```
 
-额外传递依赖：`pytz`（DuckDB `time_bucket` 函数需要）。
+无额外传递依赖：`time_bucket` 入参使用 TIMESTAMP（壁钟）避免 ICU/pytz 加载。
 
 ## 8. 对日志生产端的期望
 

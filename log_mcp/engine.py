@@ -536,10 +536,14 @@ def summarize_entries(
         result["percentiles"] = percentiles
 
     # 6. 时间桶分析（可选）
+    # 入参用 TIMESTAMP（壁钟）而非 TIMESTAMPTZ：
+    # DuckDB time_bucket 只在 TIMESTAMPTZ 入参时通过 ICU 加载 pytz/tzdata，
+    # 强行加载会在缺少 pytz 的环境下报 "ModuleNotFoundError: No module named 'pytz'"。
+    # 日志条目的 _timestamp 本就是壁钟字符串，按 TIMESTAMP 分桶语义一致且无外部依赖。
     if bucket_interval and bucket_interval in _BUCKET_INTERVALS:
         interval = _BUCKET_INTERVALS[bucket_interval]
         bucket_rows = _execute(
-            f"SELECT time_bucket({interval}, CAST(_timestamp AS TIMESTAMPTZ)) AS bucket, "
+            f"SELECT time_bucket({interval}, CAST(_timestamp AS TIMESTAMP)) AS bucket, "
             f"COUNT(*) AS total, "
             f"SUM(CASE WHEN LOWER(CAST(_level AS VARCHAR))='error' THEN 1 ELSE 0 END) AS errors "
             f"FROM ({filtered_sql}) s "
