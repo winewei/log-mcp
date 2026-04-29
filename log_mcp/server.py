@@ -17,7 +17,10 @@ from .config import SourceRegistry
 from .engine import (
     JoinFieldNotAllowed,
     _ALLOWED_JOIN_FIELDS,
+    _get_conn,
+    _read_source_sql,
     cross_query,
+    discover_files,
     query_entries,
     tail_entries,
     summarize_entries,
@@ -407,34 +410,35 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if isinstance(filters, dict):
             bad_field = next(iter(filters.keys()), "")
 
-        # 通过一次极小查询获取实际存在的列名，用于近似匹配
+        # 通过一次原始极小查询获取文件中实际存在的列名，用于近似匹配。
+        # 故意跳过 field_map 归一化（_normalize_select），避免 field_map 配置错误时 probe 本身也抛 BinderException。
         candidates: list[str] = []
         try:
-            from .engine import _build_base_sql, _get_conn
             source_name = arguments.get("source", "")
             cfg = registry.get(source_name)
             field_map = cfg.get("field_map") or {}
-            select_expr, from_clause = _build_base_sql(cfg, source_name)
-            if from_clause:
-                # 执行一次 LIMIT 1 查询取实际列名
-                probe_sql = f"SELECT {select_expr} FROM {from_clause} LIMIT 1"
-                conn = _get_conn()
-                probe_result = conn.execute(probe_sql)
+            fmt = cfg.get("format", "jsonl")
+            files = discover_files(cfg["path"], cfg.get("rotation", "none"))
+            if files:
+                # 用原始 read_json_auto 跳过 field_map，取文件真实列名
+                raw_from = _read_source_sql(files, fmt)
+                probe_sql = f"SELECT * FROM {raw_from} LIMIT 1"
+                probe_result = _get_conn().execute(probe_sql)
                 observed_fields = [desc[0] for desc in probe_result.description]
             else:
                 observed_fields = []
-            # 将 field_map 中声明的字段也纳入候选，去重合并
-            declared_fields = list(field_map.values()) + ["_timestamp", "_level", "_message", "_source"]
-            all_fields = list(dict.fromkeys(observed_fields + declared_fields))
+            # 合并：原始观察到的列名 + field_map 中配置的原始列名（values），去重
+            field_map_values = list(field_map.values())
+            all_fields = list(dict.fromkeys(observed_fields + field_map_values))
             if bad_field:
                 candidates = _get_close_field_matches(bad_field, all_fields)
         except Exception:
-            # 观察查询失败时安全回退：仅用 field_map 中已知字段
+            # probe 查询失败（文件缺失等）时安全回退：仅用 field_map values 作候选
             try:
                 source_name = arguments.get("source", "")
                 cfg = registry.get(source_name)
                 field_map = cfg.get("field_map") or {}
-                known_fields = list(field_map.values()) + ["_timestamp", "_level", "_message", "_source"]
+                known_fields = list(field_map.values())
                 if bad_field:
                     candidates = _get_close_field_matches(bad_field, known_fields)
             except Exception:

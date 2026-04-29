@@ -193,6 +193,44 @@ class TestFieldNotFound:
         suggestion = data["suggestion"]
         assert "field_map" in suggestion or "list_sources" in suggestion
 
+    def test_broken_field_map_probe_uses_raw_columns(self, tmp_path, monkeypatch):
+        """
+        field_map 配置错误时（映射到不存在的列），probe 查询应跳过 field_map 归一化，
+        直接从文件原始列名获取候选，error_code=field_not_found 且 hints.candidate_fields
+        应包含日志文件中实际存在的字段名（如 "message"）。
+        """
+        # 日志文件中真实列名为 "message"，但 field_map 把 message 错误配置为 "msg"（不存在）
+        log_path = tmp_path / "svc.jsonl"
+        _write_jsonl(log_path, [
+            {"timestamp": "2026-04-29T10:00:00+00:00", "level": "info", "message": "hello"},
+        ])
+        reg = SourceRegistry()
+        # field_map 中 message -> "msg"，但文件实际列为 "message"，配置错误
+        reg.register(
+            "svc-broken-map",
+            description="field_map 配置错误的源",
+            path=str(log_path),
+            field_map={"message": "msg"},
+        )
+        monkeypatch.setattr(srv, "registry", reg)
+
+        # 查询时 field_filters 引用 "message"，触发 BinderException（因为 select_expr 中 "msg" AS _message 失败）
+        result = run_async(srv.call_tool("query", {
+            "source": "svc-broken-map",
+            "field_filters": {"message": "hello"},
+        }))
+        data = _json(result)
+
+        # 应被映射为 field_not_found
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        assert "candidate_fields" in data["hints"]
+        # probe 绕过 field_map，从原始列获取候选；"message" 是文件实际列名，应出现在候选中
+        candidates = data["hints"]["candidate_fields"]
+        assert isinstance(candidates, list), "candidate_fields 应为列表"
+        assert "message" in candidates, (
+            f"原始列名 'message' 应出现在候选中，实际候选: {candidates}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Task 3.3：time_parse_error 含合法示例
