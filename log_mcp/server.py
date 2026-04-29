@@ -416,6 +416,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # 通过一次原始极小查询获取文件中实际存在的列名，用于近似匹配。
         # 故意跳过 field_map 归一化（_normalize_select），避免 field_map 配置错误时 probe 本身也抛 BinderException。
         candidates: list[str] = []
+        probe_error: str | None = None
         try:
             source_name = arguments.get("source", "")
             cfg = registry.get(source_name)
@@ -459,31 +460,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if not candidates and observed_fields:
                 candidates = observed_fields[:3]
 
-        except Exception:
-            # probe 查询失败（文件缺失等）时安全回退：仅用 field_map values 作候选
-            try:
-                source_name = arguments.get("source", "")
-                cfg = registry.get(source_name)
-                field_map = cfg.get("field_map") or {}
-                known_fields = list(field_map.values())
-                # 2b. 正则提取兜底（probe 失败场景同样尝试）
-                if not bad_field:
-                    m = re.search(r'Referenced column "([^"]+)"', err_msg)
-                    if m:
-                        bad_field = m.group(1)
-                if bad_field:
-                    candidates = _get_close_field_matches(bad_field, known_fields)
-                # 无候选时返回 field_map values 前 3 个作为提示
-                if not candidates and known_fields:
-                    candidates = known_fields[:3]
-            except Exception:
-                pass
+        except Exception as probe_err:
+            # probe 查询失败（文件缺失等）：候选池无法构建。
+            # 不再回退到 field_map.values()——这些可能正是配置错误的列名，自匹配会误导用户。
+            # 仅尝试从 BinderException 提取 bad_field 用于 detail，candidates 保持空。
+            if not bad_field:
+                m = re.search(r'Referenced column "([^"]+)"', err_msg)
+                if m:
+                    bad_field = m.group(1)
+            probe_error = f"{type(probe_err).__name__}: {probe_err}"
 
+        hints: dict = {"candidate_fields": candidates, "duckdb_error": err_msg}
+        if probe_error:
+            hints["probe_error"] = probe_error
         return _error_response(
             ERROR_FIELD_NOT_FOUND,
             f"字段引用失败: {err_msg}",
             "请检查 field_filters 中的字段名是否正确，或调用 list_sources 查看实际 schema",
-            {"candidate_fields": candidates, "duckdb_error": err_msg},
+            hints,
         )
     except Exception as e:
         # 兜底：未预期异常归为 internal_error

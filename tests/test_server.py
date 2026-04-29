@@ -604,6 +604,50 @@ class TestCandidatePoolExcludesFieldMapValues:
     - candidate_fields 不应包含 "body"（field_map 错误配置的 target）
     """
 
+    def test_probe_failure_fallback_excludes_field_map_values(self, tmp_path, monkeypatch):
+        """
+        regression #7（Round 4 review）：
+        probe 查询失败（mock discover_files 在 probe 内抛异常）时，
+        候选池不应回退到 field_map.values()，candidate_fields 必须不含坏 target。
+        """
+        log_path = tmp_path / "app.jsonl"
+        _write_jsonl(log_path, [
+            {"timestamp": "2026-04-29T10:00:00+00:00", "level": "info", "message": "hello"},
+        ])
+        reg = SourceRegistry()
+        reg.register(
+            "app-probe-fail",
+            description="probe 失败时 fallback 不得引入 field_map values",
+            path=str(log_path),
+            field_map={"message": "body"},
+        )
+        monkeypatch.setattr(srv, "registry", reg)
+
+        # 让 query_entries 仍正常调用 engine.discover_files（触发 BinderException），
+        # 但 srv.discover_files（probe 路径用）抛异常模拟文件丢失
+        original_discover = srv.discover_files
+        call_count = {"n": 0}
+
+        def flaky_discover(path, rotation):
+            call_count["n"] += 1
+            raise RuntimeError("simulated probe failure")
+
+        monkeypatch.setattr(srv, "discover_files", flaky_discover)
+
+        result = run_async(srv.call_tool("query", {"source": "app-probe-fail"}))
+        data = _json(result)
+
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        candidates = data["hints"].get("candidate_fields", [])
+        # probe 失败时 candidates 应为空（不再 fallback 到 field_map.values()）
+        assert "body" not in candidates, (
+            f"field_map target 'body' 不应进入候选（probe 失败 fallback），实际: {candidates}"
+        )
+        # probe_error 应被记录到 hints
+        assert "probe_error" in data["hints"], (
+            f"probe 失败时 hints 应含 probe_error 字段，实际: {data['hints']}"
+        )
+
     def test_candidate_excludes_field_map_target_includes_real_column(self, tmp_path, monkeypatch):
         """
         field_map={"message": "body"}，日志真实列含 "message"。
