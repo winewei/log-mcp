@@ -593,6 +593,88 @@ class TestBrokenFieldMapNoFilters:
 
 
 # ---------------------------------------------------------------------------
+# Field Projection：inputSchema 含 fields 参数 + handler 透传
+# ---------------------------------------------------------------------------
+
+class TestFieldProjectionSchema:
+    """验证 query/tail 的 inputSchema 含 fields 参数，并验证 handler 透传到 engine 层。"""
+
+    def _get_tool_schema(self, tool_name: str) -> dict:
+        """从 _TOOLS 列表中找到指定 tool 的 inputSchema。"""
+        tool = next((t for t in srv._TOOLS if t.name == tool_name), None)
+        assert tool is not None, f"tool {tool_name!r} 不存在"
+        return tool.inputSchema
+
+    def test_query_inputschema_has_fields_param(self):
+        """query tool 的 inputSchema.properties 应含 fields 参数。"""
+        schema = self._get_tool_schema("query")
+        props = schema.get("properties", {})
+        assert "fields" in props, f"query inputSchema 缺少 fields 参数，实际 props: {list(props.keys())}"
+        fields_schema = props["fields"]
+        assert fields_schema["type"] == "array"
+        assert fields_schema["items"]["type"] == "string"
+
+    def test_tail_inputschema_has_fields_param(self):
+        """tail tool 的 inputSchema.properties 应含 fields 参数。"""
+        schema = self._get_tool_schema("tail")
+        props = schema.get("properties", {})
+        assert "fields" in props, f"tail inputSchema 缺少 fields 参数，实际 props: {list(props.keys())}"
+        fields_schema = props["fields"]
+        assert fields_schema["type"] == "array"
+        assert fields_schema["items"]["type"] == "string"
+
+    def test_cross_query_inputschema_no_fields_param(self):
+        """cross_query tool 的 inputSchema 不应含 fields 参数（由 #3 处理）。"""
+        schema = self._get_tool_schema("cross_query")
+        props = schema.get("properties", {})
+        assert "fields" not in props, "cross_query inputSchema 不应含 fields 参数（由 #3 处理）"
+
+    def test_handle_query_passes_fields_to_engine(self, registry_with_api, monkeypatch):
+        """_handle_query 应将 fields 参数透传到 engine.query_entries。"""
+        captured = {}
+
+        original_query = srv.query_entries
+
+        def capturing_query(*args, **kwargs):
+            captured["fields"] = kwargs.get("fields")
+            return original_query(*args, **kwargs)
+
+        # server.py 通过 from .engine import query_entries，需 patch server 模块的引用
+        monkeypatch.setattr(srv, "query_entries", capturing_query)
+
+        run_async(srv.call_tool("query", {
+            "source": "test-api",
+            "fields": ["_timestamp", "_message"],
+        }))
+
+        assert captured.get("fields") == ["_timestamp", "_message"], (
+            f"fields 未正确透传，实际捕获: {captured.get('fields')}"
+        )
+
+    def test_handle_tail_passes_fields_to_engine(self, registry_with_api, monkeypatch):
+        """_handle_tail 应将 fields 参数透传到 engine.tail_entries。"""
+        captured = {}
+
+        original_tail = srv.tail_entries
+
+        def capturing_tail(*args, **kwargs):
+            captured["fields"] = kwargs.get("fields")
+            return original_tail(*args, **kwargs)
+
+        # server.py 通过 from .engine import tail_entries，需 patch server 模块的引用
+        monkeypatch.setattr(srv, "tail_entries", capturing_tail)
+
+        run_async(srv.call_tool("tail", {
+            "source": "test-api",
+            "fields": ["_level", "_source"],
+        }))
+
+        assert captured.get("fields") == ["_level", "_source"], (
+            f"fields 未正确透传，实际捕获: {captured.get('fields')}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Round 4 regression：候选池不含 field_map values（防止自匹配）
 # ---------------------------------------------------------------------------
 

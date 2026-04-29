@@ -13,6 +13,7 @@ from log_mcp.engine import (
     summarize_entries,
     _parse_time,
     _parse_filter_expr,
+    _project_fields,
 )
 
 # ---------------------------------------------------------------------------
@@ -470,3 +471,68 @@ class TestCrossQuery:
         )
         for e in result["entries"]:
             assert e["_level"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# TestProjectFields：字段裁剪与白名单
+# ---------------------------------------------------------------------------
+
+class TestProjectFields:
+    def _make_row(self, extra: dict | None = None) -> dict:
+        """构造一条包含归一化字段的基础 row。"""
+        row = {
+            "_timestamp": "2026-04-15T10:00:01+00:00",
+            "_level": "info",
+            "_message": "hello",
+            "_source": "test",
+        }
+        if extra:
+            row.update(extra)
+        return row
+
+    def test_default_truncation_large_field(self):
+        # 4.1 默认裁剪：单字段 100KB 被替换为 <truncated:100.0KB>
+        large_value = "x" * (100 * 1024)  # 100KB 纯 ASCII
+        row = self._make_row({"body": large_value})
+        result = _project_fields([row], fields=None)
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["body"] == "<truncated:100.0KB>"
+
+    def test_whitelist_returns_only_specified_fields(self, jsonl_source):
+        # 4.2 白名单：传 fields=["_timestamp","_message"] 仅返回两字段
+        name, cfg = jsonl_source
+        result = query_entries(name, cfg, fields=["_timestamp", "_message"])
+        for entry in result["entries"]:
+            assert set(entry.keys()) == {"_timestamp", "_message"}
+
+    def test_whitelist_large_field_not_truncated(self):
+        # 4.3 白名单内大字段不被截断，原值返回
+        large_value = "y" * (200 * 1024)  # 200KB
+        row = self._make_row({"body": large_value})
+        result = _project_fields([row], fields=["body"])
+        assert len(result) == 1
+        # 白名单字段原值返回，不截断
+        assert result[0]["body"] == large_value
+
+    def test_whitelist_nonexistent_field_returns_none(self):
+        # 4.4 fields 含不存在字段时返回 None 不报错
+        row = self._make_row()
+        result = _project_fields([row], fields=["nonexistent"])
+        assert len(result) == 1
+        assert result[0]["nonexistent"] is None
+
+    def test_normalized_timestamp_preserved_in_default_mode(self):
+        # 4.5 _timestamp 字段无论多大都保留原值（归一化字段不参与截断）
+        # _timestamp 理论上不会超 4KB，但此处验证其在归一化集合中不被截断
+        large_ts = "T" * (10 * 1024)  # 超出 4KB 的模拟时间戳字符串
+        row = {
+            "_timestamp": large_ts,
+            "_level": "info",
+            "_message": "test",
+            "_source": "test",
+        }
+        result = _project_fields([row], fields=None)
+        assert len(result) == 1
+        # 归一化字段 _timestamp 原值返回，不被截断
+        assert result[0]["_timestamp"] == large_ts

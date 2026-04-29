@@ -109,6 +109,7 @@ _TOOLS = [
                 "until": {"type": "string", "description": "结束时间，格式同 since"},
                 "limit": {"type": "integer", "description": "返回条数上限，默认 50，最大 500"},
                 "offset": {"type": "integer", "description": "跳过前 N 条结果，默认 0", "default": 0, "minimum": 0},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "返回字段白名单；未传时按默认裁剪"},
             },
             "required": ["source"],
         },
@@ -123,6 +124,7 @@ _TOOLS = [
                 "count": {"type": "integer", "description": "返回条数，默认 20，最大 200"},
                 "level": {"type": "string", "description": "日志级别过滤"},
                 "agent_source": {"type": "string", "description": "快捷过滤 field_filters.agent_source"},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "返回字段白名单；未传时按默认裁剪"},
             },
             "required": ["source"],
         },
@@ -249,6 +251,7 @@ async def _handle_query(args: dict) -> list[TextContent]:
         until=args.get("until"),
         limit=min(int(args.get("limit") or 50), 500),
         offset=max(int(args.get("offset") or 0), 0),
+        fields=args.get("fields") or None,
     )
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
 
@@ -267,6 +270,7 @@ async def _handle_tail(args: dict) -> list[TextContent]:
         count=min(int(args.get("count") or 20), 200),
         level=args.get("level"),
         field_filters=field_filters or None,
+        fields=args.get("fields") or None,
     )
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
 

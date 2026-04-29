@@ -3,6 +3,7 @@ DuckDB SQL 查询引擎。
 替代 reader.py + query.py 的内存处理方式，直接用 SQL 完成过滤、聚合。
 """
 
+import json
 import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -246,6 +247,68 @@ def _build_where(
 
 
 # ---------------------------------------------------------------------------
+# 字段裁剪层
+# ---------------------------------------------------------------------------
+
+# 默认裁剪时强制保留的归一化字段集合，不参与大字段截断
+_NORMALIZED_FIELDS = {"_timestamp", "_level", "_message", "_source"}
+
+
+def _format_size(byte_size: int) -> str:
+    """将字节数转为可读单位字符串（KB/MB），保留一位小数。"""
+    if byte_size >= 1024 * 1024:
+        return f"{byte_size / (1024 * 1024):.1f}MB"
+    return f"{byte_size / 1024:.1f}KB"
+
+
+def _project_fields(
+    rows: list[dict],
+    fields: list[str] | None,
+    truncate_threshold: int = 4096,
+) -> list[dict]:
+    """
+    对查询结果执行字段裁剪与大字段截断。
+
+    两段语义：
+    - fields is None（默认裁剪）：
+        保留 _timestamp/_level/_message/_source 四个归一化字段全值；
+        其他字段值序列化后超过 truncate_threshold bytes 时替换为 <truncated:<size>> 占位符。
+    - fields is not None（白名单模式）：
+        仅返回 fields 列表中的字段；不存在字段补 None；
+        白名单字段不参与大字段截断（原值返回）。
+    """
+    if not rows:
+        return rows
+
+    result: list[dict] = []
+
+    if fields is None:
+        # 默认裁剪：保留归一化字段，其余超 threshold 替换为占位符
+        for row in rows:
+            projected: dict = {}
+            for key, value in row.items():
+                if key in _NORMALIZED_FIELDS:
+                    projected[key] = value
+                else:
+                    # 计算序列化后的字节大小
+                    byte_size = len(
+                        json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+                    )
+                    if byte_size > truncate_threshold:
+                        projected[key] = f"<truncated:{_format_size(byte_size)}>"
+                    else:
+                        projected[key] = value
+            result.append(projected)
+    else:
+        # 白名单模式：仅返回指定字段，白名单字段不截断
+        for row in rows:
+            projected = {field: row.get(field) for field in fields}
+            result.append(projected)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 执行层
 # ---------------------------------------------------------------------------
 
@@ -294,10 +357,12 @@ def query_entries(
     until: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    fields: list[str] | None = None,
 ) -> dict:
     """
     按条件查询日志条目，结果按 _timestamp ASC 排序。
     返回 {"total_matched": int, "entries": list[dict]}。
+    fields 为字段白名单，未传时按默认裁剪策略（保留归一化字段 + 大字段截断）。
     """
     select_expr, from_clause = _build_base_sql(source_cfg, source_name)
     if not from_clause:
@@ -320,7 +385,7 @@ def query_entries(
     )
     entries = _execute(data_sql, list(params))
 
-    return {"total_matched": total, "entries": entries}
+    return {"total_matched": total, "entries": _project_fields(entries, fields)}
 
 
 def tail_entries(
@@ -329,10 +394,12 @@ def tail_entries(
     count: int = 20,
     level: str | None = None,
     field_filters: dict | None = None,
+    fields: list[str] | None = None,
 ) -> dict:
     """
     获取最新 N 条日志，结果按 _timestamp DESC 排序。
     返回 {"total_matched": int, "entries": list[dict]}。
+    fields 为字段白名单，未传时按默认裁剪策略（保留归一化字段 + 大字段截断）。
     """
     select_expr, from_clause = _build_base_sql(source_cfg, source_name)
     if not from_clause:
@@ -354,7 +421,7 @@ def tail_entries(
     )
     entries = _execute(data_sql, list(params))
 
-    return {"total_matched": total, "entries": entries}
+    return {"total_matched": total, "entries": _project_fields(entries, fields)}
 
 
 _BUCKET_INTERVALS = {
