@@ -44,13 +44,35 @@ AI Agent（如 Claude Code）在辅助开发与测试时，频繁需要回答以
 
 ### 1. 安装
 
+要求 Python 3.11+。依赖自动安装：`mcp` / `duckdb` / `pyyaml`。
+
+**推荐：`uv tool install`（全局隔离，无需手动管虚拟环境）**
+
+```bash
+# 从源码安装（克隆后）
+git clone <repo-url> log-mcp
+cd log-mcp
+uv tool install .
+
+# 或直接从 git 安装
+uv tool install git+<repo-url>
+
+# 升级
+uv tool upgrade log-mcp
+
+# 卸载
+uv tool uninstall log-mcp
+```
+
+安装后 `log-mcp` 命令即可全局调用（位于 `~/.local/bin/log-mcp`，由 uv 自动加入 PATH）。
+
+**备选：pip 开发模式**
+
 ```bash
 git clone <repo-url> log-mcp
 cd log-mcp
 pip install -e .
 ```
-
-要求 Python 3.11+。依赖自动安装：`mcp` / `duckdb` / `pyyaml`。
 
 ### 2. 准备日志
 
@@ -69,10 +91,13 @@ pip install -e .
 
 ```bash
 # 带配置文件
-python -m log_mcp --config /absolute/path/to/sources.yaml
+log-mcp --config /absolute/path/to/sources.yaml
 
 # 纯动态注册模式（运行时通过 register_source 添加源）
-python -m log_mcp
+log-mcp
+
+# 等价方式（开发态或未安装 entry point 时）
+python -m log_mcp --config /absolute/path/to/sources.yaml
 ```
 
 ### 5. 接入 Claude Code
@@ -83,8 +108,8 @@ python -m log_mcp
 {
   "mcpServers": {
     "log": {
-      "command": "python",
-      "args": ["-m", "log_mcp", "--config", "/absolute/path/to/sources.yaml"]
+      "command": "log-mcp",
+      "args": ["--config", "/absolute/path/to/sources.yaml"]
     }
   },
   "permissions": {
@@ -100,6 +125,8 @@ python -m log_mcp
   }
 }
 ```
+
+> 若 `log-mcp` 未在 PATH（如未用 uv tool install），可改用绝对路径 `"command": "/path/to/.venv/bin/log-mcp"` 或 `"command": "python", "args": ["-m", "log_mcp", "--config", "..."]`。
 
 重启 Claude Code 后，输入 `/mcp` 应能看到 `log` Server 已连接。
 

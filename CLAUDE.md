@@ -27,7 +27,7 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 - 代码变更后快速定位错误（按级别/时间窗口过滤）
 - 单次调用链排障（按 `correlation_id`/`trace_id` 过滤）
 - 服务健康状况聚合（分位数/时间桶/分组统计）
-- 跨服务/跨端链路重建（通过共享字段 INNER JOIN 多个日志源）
+- 跨服务/跨端链路重建（通过共享字段 UNION ALL 多个日志源，按时间线排序）
 
 ## 技术栈
 
@@ -46,14 +46,18 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 
 ## 快速开始
 
-实现完成后，使用方式：
-
 ```bash
-# 带配置文件启动
-python -m log_mcp --config /path/to/sources.yaml
+# 推荐：uv tool install 全局安装（隔离环境 + 自动加入 PATH）
+uv tool install .                       # 从源码
+uv tool install git+<repo-url>          # 或从 git
+log-mcp --config /path/to/sources.yaml  # 启动
 
-# 无配置启动（纯动态注册）
-python -m log_mcp
+# 或开发态 pip install -e .
+pip install -e .
+log-mcp --config /path/to/sources.yaml
+
+# 等价方式（开发态调用包模块）
+python -m log_mcp --config /path/to/sources.yaml
 ```
 
 Claude Code 项目配置（`.claude/settings.local.json`）：
@@ -62,8 +66,8 @@ Claude Code 项目配置（`.claude/settings.local.json`）：
 {
   "mcpServers": {
     "log": {
-      "command": "python",
-      "args": ["-m", "log_mcp", "--config", "/path/to/sources.yaml"]
+      "command": "log-mcp",
+      "args": ["--config", "/path/to/sources.yaml"]
     }
   }
 }
