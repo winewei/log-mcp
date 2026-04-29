@@ -198,10 +198,11 @@ _TOOLS = [
                     "minItems": 2,
                     "description": "参与关联的日志源名称列表，至少 2 个",
                 },
-                "join_field": {"type": "string", "description": "用于 JOIN 关联的字段名"},
+                "join_field": {"type": "string", "description": "用于关联的字段名"},
                 "level": {"type": "string", "description": "日志级别过滤，应用于所有源"},
-                "since": {"type": "string", "description": "时间范围起点"},
+                "since": {"type": "string", "description": "时间范围起点，默认 1h"},
                 "limit": {"type": "integer", "description": "返回条数上限，默认 50"},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "返回字段白名单；未传时按默认裁剪"},
             },
             "required": ["sources", "join_field"],
         },
@@ -333,13 +334,18 @@ async def _handle_cross_query(args: dict) -> list[TextContent]:
     for name in source_names:
         sources_cfg[name] = registry.get(name)
 
-    result = cross_query(
-        sources_cfg=sources_cfg,
-        join_field=args["join_field"],
-        level=args.get("level"),
-        since=args.get("since"),
-        limit=min(int(args.get("limit") or 50), 500),
-    )
+    # 调用方未传 since 时让 engine 使用其默认值 1h，显式传 None 则透传
+    kwargs: dict = {
+        "sources_cfg": sources_cfg,
+        "join_field": args["join_field"],
+        "level": args.get("level"),
+        "limit": min(int(args.get("limit") or 50), 500),
+        "fields": args.get("fields") or None,
+    }
+    if "since" in args:
+        kwargs["since"] = args["since"]
+
+    result = cross_query(**kwargs)
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
 
 

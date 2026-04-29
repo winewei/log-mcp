@@ -101,30 +101,45 @@ def rotated_numeric_source(tmp_dir):
 
 @pytest.fixture
 def cross_query_sources(tmp_dir):
-    """创建两个 JSONL 源，共享 correlation_id 用于跨源关联测试。"""
-    # 源 A：API 日志
-    file_a = tmp_dir / "cross_api.jsonl"
-    entries_a = [
-        {"timestamp": "2026-04-15T10:00:01+00:00", "level": "info", "message": "login_request", "correlation_id": "run-001", "path": "/api/login"},
-        {"timestamp": "2026-04-15T10:00:02+00:00", "level": "error", "message": "auth_failed", "correlation_id": "run-001", "path": "/api/login"},
-        {"timestamp": "2026-04-15T10:00:03+00:00", "level": "info", "message": "list_peers", "correlation_id": "run-003", "path": "/api/peers"},
+    """
+    创建两个 JSONL 源，用于跨源 UNION ALL 时间线测试。
+    - frontend：有 _source 特有字段 screen（backend 无此字段）
+    - backend：有 _source 特有字段 path（frontend 无此字段）
+    - 近期条目（2026-04-29T10）：frontend 3 条 + backend 5 条 = 8 条
+    - 远期条目（2026-04-01，超过 1h）：frontend 1 条 + backend 1 条 = 2 条
+    - 总计 10 条；since=None 全量 10 条，since="2026-04-29T09:00:00+00:00" 仅近期 8 条
+    注：测试不依赖 datetime.now() 以避免跨时区 CAST 问题，直接用固定时间戳。
+    """
+    file_fe = tmp_dir / "cross_frontend.jsonl"
+    entries_fe = [
+        # 近期 3 条 run-001
+        {"timestamp": "2026-04-29T10:00:01+00:00", "level": "info",  "message": "page_view",     "correlation_id": "run-001", "screen": "home"},
+        {"timestamp": "2026-04-29T10:00:02+00:00", "level": "info",  "message": "tap_login_btn", "correlation_id": "run-001", "screen": "login"},
+        {"timestamp": "2026-04-29T10:00:03+00:00", "level": "error", "message": "login_failed",  "correlation_id": "run-001", "screen": "login"},
+        # 远期 1 条（供 since 过滤测试用，since="2026-04-29T09:00:00+00:00" 时被过滤）
+        {"timestamp": "2026-04-01T10:00:00+00:00", "level": "info",  "message": "old_page_view", "correlation_id": "run-001", "screen": "home"},
     ]
-    with file_a.open("w") as f:
-        for e in entries_a:
+    with file_fe.open("w") as f:
+        for e in entries_fe:
             f.write(json.dumps(e) + "\n")
-    cfg_a = {"path": str(file_a), "rotation": "none", "format": "jsonl", "field_map": {}}
+    cfg_fe = {"path": str(file_fe), "rotation": "none", "format": "jsonl", "field_map": {}}
 
-    # 源 B：客户端日志
-    file_b = tmp_dir / "cross_client.jsonl"
-    entries_b = [
-        {"timestamp": "2026-04-15T10:00:01+00:00", "level": "info", "message": "tap_login_btn", "correlation_id": "run-001", "screen": "login"},
-        {"timestamp": "2026-04-15T10:00:04+00:00", "level": "info", "message": "tap_settings", "correlation_id": "run-002", "screen": "settings"},
+    file_be = tmp_dir / "cross_backend.jsonl"
+    entries_be = [
+        # 近期 5 条 run-001
+        {"timestamp": "2026-04-29T10:00:01+00:00", "level": "info",  "message": "api_request",   "correlation_id": "run-001", "path": "/api/login"},
+        {"timestamp": "2026-04-29T10:00:02+00:00", "level": "info",  "message": "db_query",      "correlation_id": "run-001", "path": "/api/login"},
+        {"timestamp": "2026-04-29T10:00:03+00:00", "level": "info",  "message": "cache_hit",     "correlation_id": "run-001", "path": "/api/login"},
+        {"timestamp": "2026-04-29T10:00:04+00:00", "level": "error", "message": "auth_failed",   "correlation_id": "run-001", "path": "/api/login"},
+        {"timestamp": "2026-04-29T10:00:05+00:00", "level": "info",  "message": "response_sent", "correlation_id": "run-001", "path": "/api/login"},
+        # 远期 1 条（供 since 过滤测试用）
+        {"timestamp": "2026-04-01T10:00:00+00:00", "level": "info",  "message": "old_api_req",   "correlation_id": "run-001", "path": "/api/login"},
     ]
-    with file_b.open("w") as f:
-        for e in entries_b:
+    with file_be.open("w") as f:
+        for e in entries_be:
             f.write(json.dumps(e) + "\n")
-    cfg_b = {"path": str(file_b), "rotation": "none", "format": "jsonl", "field_map": {}}
+    cfg_be = {"path": str(file_be), "rotation": "none", "format": "jsonl", "field_map": {}}
 
-    yield {"api": cfg_a, "client": cfg_b}
-    file_a.unlink(missing_ok=True)
-    file_b.unlink(missing_ok=True)
+    yield {"frontend": cfg_fe, "backend": cfg_be}
+    file_fe.unlink(missing_ok=True)
+    file_be.unlink(missing_ok=True)

@@ -424,34 +424,130 @@ class TestNumericRotation:
 
 
 # ---------------------------------------------------------------------------
-# TestCrossQuery
+# TestCrossQuery（UNION ALL BY NAME 时间线语义）
 # ---------------------------------------------------------------------------
 
 class TestCrossQuery:
-    def test_basic_cross_query(self, cross_query_sources):
-        # run-001 在两个源中都存在，INNER JOIN 应命中
+    def test_row_count_equals_sum_of_sources(self, cross_query_sources):
+        # UNION ALL 语义：frontend 4 条 + backend 6 条 = 10 条（全量，since=None）
+        # 旧 INNER JOIN 语义会产生笛卡尔积，此测试验证新语义为各源之和
         cfgs = cross_query_sources
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            since=None,
         )
         assert "entries" in result
-        # api 源有 2 条 run-001，client 源有 1 条 run-001
-        # INNER JOIN 应产生 2 条结果（api 的 2 条 x client 的 1 条匹配）
-        assert len(result["entries"]) >= 1
+        # frontend 4 条 + backend 6 条
+        assert len(result["entries"]) == 10
 
-    def test_inner_join_semantics(self, cross_query_sources):
-        # run-003 仅在 api 中存在，run-002 仅在 client 中存在，均不应出现
+    def test_source_field_present_in_all_entries(self, cross_query_sources):
+        # 每条 entry 均含 _source 字段，标识其来源（由 _normalize_select 注入）
         cfgs = cross_query_sources
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            since=None,
         )
-        corr_ids = {str(e.get("correlation_id")) for e in result["entries"]}
-        assert "run-003" not in corr_ids
-        assert "run-002" not in corr_ids
+        for entry in result["entries"]:
+            assert "_source" in entry
+            assert entry["_source"] in ("frontend", "backend")
 
-    def test_invalid_join_field(self, cross_query_sources):
+    def test_source_field_values_cover_both_sources(self, cross_query_sources):
+        # _source 字段取值涵盖两个源名
+        cfgs = cross_query_sources
+        result = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since=None,
+        )
+        sources_present = {e["_source"] for e in result["entries"]}
+        assert "frontend" in sources_present
+        assert "backend" in sources_present
+
+    def test_ordered_by_timestamp_asc(self, cross_query_sources):
+        # 结果按 _timestamp ASC 排序（时间线语义）
+        cfgs = cross_query_sources
+        result = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since=None,
+        )
+        entries = result["entries"]
+        timestamps = [str(e["_timestamp"]) for e in entries if e.get("_timestamp")]
+        assert timestamps == sorted(timestamps)
+
+    def test_union_by_name_null_alignment(self, cross_query_sources):
+        # frontend 有 screen 字段，backend 有 path 字段
+        # UNION ALL BY NAME 后：frontend 行的 path 为 NULL，backend 行的 screen 为 NULL
+        cfgs = cross_query_sources
+        result = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since=None,
+        )
+        entries = result["entries"]
+        fe_entries = [e for e in entries if e["_source"] == "frontend"]
+        be_entries = [e for e in entries if e["_source"] == "backend"]
+
+        # frontend 行含 screen 字段（非 NULL），path 字段缺失或为 NULL
+        assert len(fe_entries) > 0
+        for e in fe_entries:
+            assert e.get("screen") is not None
+            # backend 特有字段 path 应补 NULL
+            assert e.get("path") is None
+
+        # backend 行含 path 字段（非 NULL），screen 字段缺失或为 NULL
+        assert len(be_entries) > 0
+        for e in be_entries:
+            assert e.get("path") is not None
+            # frontend 特有字段 screen 应补 NULL
+            assert e.get("screen") is None
+
+    def test_since_filter_excludes_old_entries(self, cross_query_sources):
+        # 使用 since="2026-04-29T09:00:00+00:00" 过滤远期条目（2026-04-01）
+        # 近期：frontend 3 条 + backend 5 条 = 8 条；远期 2 条被过滤
+        cfgs = cross_query_sources
+        result_filtered = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since="2026-04-29T09:00:00+00:00",
+        )
+        result_all = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since=None,
+        )
+        # 过滤后条数 < 全量
+        assert len(result_filtered["entries"]) < len(result_all["entries"])
+        # 远期条目不应出现
+        for entry in result_filtered["entries"]:
+            assert entry.get("_message") != "old_page_view"
+            assert entry.get("_message") != "old_api_req"
+
+    def test_since_explicit_none_includes_all_entries(self, cross_query_sources):
+        # 显式传 since=None 时应全量扫描，返回 10 条（frontend 4 + backend 6）
+        cfgs = cross_query_sources
+        result = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since=None,
+        )
+        assert len(result["entries"]) == 10
+
+    def test_fields_whitelist(self, cross_query_sources):
+        # fields 参数生效：仅返回指定字段
+        cfgs = cross_query_sources
+        result = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            since=None,
+            fields=["_timestamp", "_source", "_message"],
+        )
+        for entry in result["entries"]:
+            assert set(entry.keys()) == {"_timestamp", "_source", "_message"}
+
+    def test_invalid_join_field_raises(self, cross_query_sources):
         # 非白名单字段应抛出 JoinFieldNotAllowed（由 engine 层 raise，server 层捕获映射）
         from log_mcp.engine import JoinFieldNotAllowed
         cfgs = cross_query_sources
@@ -461,16 +557,25 @@ class TestCrossQuery:
                 join_field="malicious_field",
             )
 
-    def test_cross_query_with_level(self, cross_query_sources):
-        # level=error 过滤后，只有 api 的 auth_failed 满足
+    def test_level_filter_applies_to_all_sources(self, cross_query_sources):
+        # level=error 过滤后，所有返回 entry 的 _level 均为 error
         cfgs = cross_query_sources
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            since=None,
             level="error",
         )
+        assert len(result["entries"]) > 0
         for e in result["entries"]:
             assert e["_level"] == "error"
+
+    def test_fewer_than_two_sources_raises(self, cross_query_sources):
+        # 少于 2 个 source 抛 ValueError
+        cfgs = cross_query_sources
+        single = {"frontend": cfgs["frontend"]}
+        with pytest.raises(ValueError, match="至少需要 2"):
+            cross_query(sources_cfg=single, join_field="correlation_id")
 
 
 # ---------------------------------------------------------------------------

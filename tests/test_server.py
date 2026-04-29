@@ -623,11 +623,14 @@ class TestFieldProjectionSchema:
         assert fields_schema["type"] == "array"
         assert fields_schema["items"]["type"] == "string"
 
-    def test_cross_query_inputschema_no_fields_param(self):
-        """cross_query tool 的 inputSchema 不应含 fields 参数（由 #3 处理）。"""
+    def test_cross_query_inputschema_has_fields_param(self):
+        """cross_query tool 的 inputSchema.properties 应含 fields 参数。"""
         schema = self._get_tool_schema("cross_query")
         props = schema.get("properties", {})
-        assert "fields" not in props, "cross_query inputSchema 不应含 fields 参数（由 #3 处理）"
+        assert "fields" in props, f"cross_query inputSchema 缺少 fields 参数，实际 props: {list(props.keys())}"
+        fields_schema = props["fields"]
+        assert fields_schema["type"] == "array"
+        assert fields_schema["items"]["type"] == "string"
 
     def test_handle_query_passes_fields_to_engine(self, registry_with_api, monkeypatch):
         """_handle_query 应将 fields 参数透传到 engine.query_entries。"""
@@ -764,3 +767,136 @@ class TestCandidatePoolExcludesFieldMapValues:
         assert "body" not in candidates, (
             f"field_map target 'body' 不应在候选中，实际候选: {candidates}"
         )
+
+
+# ---------------------------------------------------------------------------
+# cross_query UNION ALL 时间线：server 层测试
+# ---------------------------------------------------------------------------
+
+class TestCrossQueryUnionTimeline:
+    """
+    验证 cross_query handler 在 UNION ALL 语义下的行为：
+    - inputSchema 含 fields 参数
+    - fields 参数透传 engine 层
+    - join_field 不在白名单返回 join_field_not_allowed
+    - sources < 2 返回 internal_error
+    - 源不存在返回 source_not_found
+    """
+
+    @pytest.fixture
+    def timeline_registry(self, tmp_path, monkeypatch):
+        """注册两个日志源，各含数条 correlation_id=cid-1 的固定时间戳日志。"""
+        fe_path = tmp_path / "fe.jsonl"
+        be_path = tmp_path / "be.jsonl"
+
+        _write_jsonl(fe_path, [
+            {"timestamp": "2026-04-29T10:00:01+00:00", "level": "info",  "message": "page_view",  "correlation_id": "cid-1", "screen": "home"},
+            {"timestamp": "2026-04-29T10:00:02+00:00", "level": "info",  "message": "tap_btn",    "correlation_id": "cid-1", "screen": "login"},
+            {"timestamp": "2026-04-29T10:00:03+00:00", "level": "error", "message": "login_fail", "correlation_id": "cid-1", "screen": "login"},
+        ])
+        _write_jsonl(be_path, [
+            {"timestamp": "2026-04-29T10:00:01+00:00", "level": "info",  "message": "api_req",    "correlation_id": "cid-1", "path": "/login"},
+            {"timestamp": "2026-04-29T10:00:02+00:00", "level": "info",  "message": "db_query",   "correlation_id": "cid-1", "path": "/login"},
+            {"timestamp": "2026-04-29T10:00:03+00:00", "level": "error", "message": "auth_fail",  "correlation_id": "cid-1", "path": "/login"},
+            {"timestamp": "2026-04-29T10:00:04+00:00", "level": "info",  "message": "resp_sent",  "correlation_id": "cid-1", "path": "/login"},
+            {"timestamp": "2026-04-29T10:00:05+00:00", "level": "info",  "message": "health",     "correlation_id": "cid-2", "path": "/health"},
+        ])
+
+        reg = SourceRegistry()
+        reg.register("fe", description="前端", path=str(fe_path))
+        reg.register("be", description="后端", path=str(be_path))
+        monkeypatch.setattr(srv, "registry", reg)
+        return reg
+
+    def _get_tool_schema(self, tool_name: str) -> dict:
+        tool = next((t for t in srv._TOOLS if t.name == tool_name), None)
+        assert tool is not None
+        return tool.inputSchema
+
+    def test_cross_query_inputschema_has_fields(self):
+        """cross_query inputSchema 应含 fields 参数（array of string）。"""
+        schema = self._get_tool_schema("cross_query")
+        props = schema.get("properties", {})
+        assert "fields" in props
+        assert props["fields"]["type"] == "array"
+        assert props["fields"]["items"]["type"] == "string"
+
+    def test_handle_cross_query_passes_fields_to_engine(self, timeline_registry, monkeypatch):
+        """_handle_cross_query 应将 fields 参数透传到 engine.cross_query。"""
+        captured = {}
+        original_cq = srv.cross_query
+
+        def capturing_cq(*args, **kwargs):
+            captured["fields"] = kwargs.get("fields")
+            return original_cq(*args, **kwargs)
+
+        monkeypatch.setattr(srv, "cross_query", capturing_cq)
+
+        run_async(srv.call_tool("cross_query", {
+            "sources": ["fe", "be"],
+            "join_field": "correlation_id",
+            "since": None,
+            "fields": ["_timestamp", "_source", "_message"],
+        }))
+
+        assert captured.get("fields") == ["_timestamp", "_source", "_message"], (
+            f"fields 未正确透传，实际捕获: {captured.get('fields')}"
+        )
+
+    def test_cross_query_returns_source_field(self, timeline_registry):
+        """cross_query 返回的 entry 均含 _source 字段。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["fe", "be"],
+            "join_field": "correlation_id",
+            "since": None,
+        }))
+        data = _json(result)
+        assert "entries" in data
+        assert len(data["entries"]) > 0
+        for entry in data["entries"]:
+            assert "_source" in entry
+            assert entry["_source"] in ("fe", "be")
+
+    def test_join_field_not_allowed_returns_structured_error(self, timeline_registry):
+        """email 不在白名单，返回 join_field_not_allowed 结构化错误。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["fe", "be"],
+            "join_field": "email",
+        }))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_JOIN_FIELD_NOT_ALLOWED)
+        assert "allowed_join_fields" in data["hints"]
+        assert "correlation_id" in data["hints"]["allowed_join_fields"]
+
+    def test_sources_less_than_2_returns_internal_error(self, timeline_registry):
+        """sources < 2 时返回 internal_error。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["fe"],
+            "join_field": "correlation_id",
+        }))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_INTERNAL)
+
+    def test_source_not_found_returns_source_not_found(self, timeline_registry):
+        """sources 中含不存在的源名时返回 source_not_found。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["fe", "ghost-source"],
+            "join_field": "correlation_id",
+        }))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_SOURCE_NOT_FOUND)
+        assert "available_sources" in data["hints"]
+
+    def test_fields_whitelist_limits_output(self, timeline_registry):
+        """传 fields 白名单时，返回 entry 仅含指定字段。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["fe", "be"],
+            "join_field": "correlation_id",
+            "since": None,
+            "fields": ["_timestamp", "_source", "_message"],
+        }))
+        data = _json(result)
+        assert "entries" in data
+        assert len(data["entries"]) > 0
+        for entry in data["entries"]:
+            assert set(entry.keys()) == {"_timestamp", "_source", "_message"}

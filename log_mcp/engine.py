@@ -570,12 +570,17 @@ def cross_query(
     sources_cfg: dict[str, dict],
     join_field: str,
     level: str | None = None,
-    since: str | None = None,
+    since: str | None = "1h",
     limit: int = 50,
+    fields: list[str] | None = None,
 ) -> dict:
     """
-    跨源关联查询：为每个 source 构造 CTE，通过 INNER JOIN ON join_field 关联。
-    返回 {"entries": list[dict]}，每条记录按 _timestamp 排序。
+    跨源时间线查询：为每个 source 构造 CTE，通过 UNION ALL BY NAME 按时间线合并。
+    每条记录携带 _source 字段标识来源，字段不同的源缺失列自动补 NULL。
+    返回 {"entries": list[dict]}，按 _timestamp ASC NULLS LAST 排序。
+
+    since 默认 1h，避免无界扫描拖慢响应；调用方可显式传 since=None 表示全量。
+    fields 为字段白名单，未传时按默认裁剪策略（保留归一化字段 + 大字段截断）。
     """
     if join_field not in _ALLOWED_JOIN_FIELDS:
         raise JoinFieldNotAllowed(
@@ -595,7 +600,7 @@ def cross_query(
             raise KeyError(name)
 
         where_str, params = _build_where(level, None, None, since, None)
-        # 重新编号参数，使各 CTE 的参数不冲突
+        # 重新编号参数偏移量，使各 CTE 的 $N 参数全局唯一不冲突
         offset = len(all_params)
         adjusted_where = where_str
         for j in range(len(params), 0, -1):
@@ -608,24 +613,18 @@ def cross_query(
             f"{alias} AS (SELECT * FROM (SELECT {select_expr} FROM {from_clause}) t {where_clause})"
         )
 
-    # 构建 INNER JOIN：s0 JOIN s1 ON join_field，结果取 s0 全部列
-    first = "s0"
-    join_clauses = []
-    for i in range(1, len(source_names)):
-        alias = f"s{i}"
-        join_clauses.append(
-            f'INNER JOIN {alias} ON {first}."{join_field}" = {alias}."{join_field}"'
-        )
-
-    joins_str = " ".join(join_clauses)
+    # 构建 UNION ALL BY NAME：各 CTE 按列名自动对齐，缺失列补 NULL
+    # _normalize_select 已注入 _source 常量列，UNION 后每行均携带来源标识
+    union_parts = [f"SELECT * FROM s{i}" for i in range(len(source_names))]
+    union_sql = "\nUNION ALL BY NAME\n".join(union_parts)
     ctes_str = ", ".join(cte_parts)
 
     sql = (
         f"WITH {ctes_str} "
-        f"SELECT {first}.* FROM {first} {joins_str} "
-        f"ORDER BY {first}._timestamp ASC NULLS LAST "
+        f"SELECT * FROM ({union_sql}) t "
+        f"ORDER BY _timestamp ASC NULLS LAST "
         f"LIMIT {int(limit)}"
     )
 
     entries = _execute(sql, all_params)
-    return {"entries": entries}
+    return {"entries": _project_fields(entries, fields)}

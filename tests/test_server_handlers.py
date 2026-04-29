@@ -391,9 +391,11 @@ class TestQueryHandlers:
         assert captured["field_filters"] == {"correlation_id": "run-001"}
 
     def test_cross_query_success(self, cross_sources_registry):
+        # since=None 绕过默认 1h 窗口，使固定历史时间戳的数据可以返回
         result = run_async(srv._handle_cross_query({
             "sources": ["api", "client"],
             "join_field": "correlation_id",
+            "since": None,
         }))
         data = _json(result)
         assert "entries" in data
