@@ -181,3 +181,40 @@ def cross_query_4sources(tmp_dir):
 
     for fp in files:
         fp.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def cross_query_numeric_join(tmp_dir):
+    """
+    Regression fixture：一个源的 join_field（correlation_id）为数值类型（int），
+    另一个源为字符串类型，用于验证双侧 CAST 防御：
+    - numeric join_value=1 不应匹配字符串 "001"
+    - string join_value="abc" 在数值 join_field 列上不抛错且返回 0 行
+
+    源 num_src：correlation_id 存为 integer（如 1），message 为 "num_event"
+    源 str_src：correlation_id 存为字符串（如 "001"），message 为 "str_event"
+    """
+    # 数值 correlation_id 源：使用 99 而非 1，使得 join_value=1 不匹配此源，
+    # 同时也不匹配 str_src 的 "001"，从而验证 int→str CAST 防止零填充误匹配
+    file_num = tmp_dir / "cross_num_join.jsonl"
+    entries_num = [
+        {"timestamp": "2026-04-29T10:00:01+00:00", "level": "info", "message": "num_event", "correlation_id": 99},
+    ]
+    with file_num.open("w") as f:
+        for e in entries_num:
+            f.write(json.dumps(e) + "\n")
+    cfg_num = {"path": str(file_num), "rotation": "none", "format": "jsonl", "field_map": {}}
+
+    # 字符串 correlation_id 源（"001" 与整数 1 格式不同）
+    file_str = tmp_dir / "cross_str_join.jsonl"
+    entries_str = [
+        {"timestamp": "2026-04-29T10:00:02+00:00", "level": "info", "message": "str_event", "correlation_id": "001"},
+    ]
+    with file_str.open("w") as f:
+        for e in entries_str:
+            f.write(json.dumps(e) + "\n")
+    cfg_str = {"path": str(file_str), "rotation": "none", "format": "jsonl", "field_map": {}}
+
+    yield {"num_src": cfg_num, "str_src": cfg_str}
+    file_num.unlink(missing_ok=True)
+    file_str.unlink(missing_ok=True)

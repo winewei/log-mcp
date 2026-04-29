@@ -634,6 +634,32 @@ class TestCrossQuery:
         assert "$10" in sql_text, f"SQL 中未找到 $10，实际 SQL：\n{sql_text}"
         assert "$12" in sql_text, f"SQL 中未找到 $12，实际 SQL：\n{sql_text}"
 
+    def test_numeric_join_value_does_not_match_zero_padded_string(self, cross_query_numeric_join):
+        # Regression R4：numeric join_value=1 不应匹配字符串 "001"
+        # 双侧 CAST 后 "1" != "001"，期望返回 0 行
+        result = cross_query(
+            sources_cfg=cross_query_numeric_join,
+            join_field="correlation_id",
+            join_value=1,  # type: ignore[arg-type]  # 故意传 int 模拟调用方绕过 schema
+            since=None,
+        )
+        assert result["entries"] == [], (
+            f"numeric join_value=1 不应匹配字符串 '001'，实际返回 {len(result['entries'])} 条"
+        )
+
+    def test_string_join_value_on_numeric_column_no_error(self, cross_query_numeric_join):
+        # Regression R4：string join_value='abc' 在数值 join_field 列上不应抛错
+        # 双侧 CAST 后类型一致为 VARCHAR，DuckDB 不再尝试 coerce INTEGER，应返回 0 行而非 abort
+        result = cross_query(
+            sources_cfg=cross_query_numeric_join,
+            join_field="correlation_id",
+            join_value="abc",
+            since=None,
+        )
+        assert result["entries"] == [], (
+            f"string join_value='abc' 在数值列上应返回 0 行，实际返回 {len(result['entries'])} 条"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestProjectFields：字段裁剪与白名单
