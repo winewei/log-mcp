@@ -1,6 +1,6 @@
 # mcp-tool-handlers Spec Delta
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Tool Description Style
 7 个 tool 的 `description` 字段 SHALL 遵循"when-to-use 在前、做什么在后"的中文单句格式，单句长度 SHALL 不超过 50 字，且 SHALL 不引入 examples 字段。每个 tool 的 description 语义要点 SHALL 与下表一致：
