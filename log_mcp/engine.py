@@ -569,6 +569,7 @@ _ALLOWED_JOIN_FIELDS = {
 def cross_query(
     sources_cfg: dict[str, dict],
     join_field: str,
+    join_value: str,
     level: str | None = None,
     since: str | None = "1h",
     limit: int = 50,
@@ -579,6 +580,8 @@ def cross_query(
     每条记录携带 _source 字段标识来源，字段不同的源缺失列自动补 NULL。
     返回 {"entries": list[dict]}，按 _timestamp ASC NULLS LAST 排序。
 
+    join_value 为必填，每个 CTE 会加上 WHERE "<join_field>" = $N 等值过滤，
+    确保只返回与指定值关联的记录（如 correlation_id="abc123"）。
     since 默认 1h，避免无界扫描拖慢响应；调用方可显式传 since=None 表示全量。
     fields 为字段白名单，未传时按默认裁剪策略（保留归一化字段 + 大字段截断）。
     """
@@ -606,6 +609,12 @@ def cross_query(
         for j in range(len(params), 0, -1):
             adjusted_where = adjusted_where.replace(f"${j}", f"${j + offset}")
         all_params.extend(params)
+
+        # 追加 join_field 等值过滤，参数编号紧接已有参数之后
+        join_param_idx = len(all_params) + 1
+        join_filter = f'"{join_field}" = ${join_param_idx}'
+        adjusted_where = f"{adjusted_where} AND {join_filter}" if adjusted_where else join_filter
+        all_params.append(join_value)
 
         where_clause = f"WHERE {adjusted_where}" if adjusted_where else ""
         alias = f"s{i}"

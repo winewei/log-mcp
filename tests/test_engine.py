@@ -435,10 +435,11 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         assert "entries" in result
-        # frontend 4 条 + backend 6 条
+        # frontend 4 条 + backend 6 条，全部属于 run-001
         assert len(result["entries"]) == 10
 
     def test_source_field_present_in_all_entries(self, cross_query_sources):
@@ -447,6 +448,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         for entry in result["entries"]:
@@ -459,6 +461,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         sources_present = {e["_source"] for e in result["entries"]}
@@ -471,6 +474,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         entries = result["entries"]
@@ -484,6 +488,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         entries = result["entries"]
@@ -511,11 +516,13 @@ class TestCrossQuery:
         result_filtered = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since="2026-04-29T09:00:00+00:00",
         )
         result_all = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         # 过滤后条数 < 全量
@@ -531,6 +538,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
         )
         assert len(result["entries"]) == 10
@@ -541,6 +549,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
             fields=["_timestamp", "_source", "_message"],
         )
@@ -555,7 +564,19 @@ class TestCrossQuery:
             cross_query(
                 sources_cfg=cfgs,
                 join_field="malicious_field",
+                join_value="run-001",
             )
+
+    def test_join_value_filters_only_matching_records(self, cross_query_sources):
+        # join_value 过滤：只返回 correlation_id="run-001" 的记录，其他值不存在时返回 0 条
+        cfgs = cross_query_sources
+        result = cross_query(
+            sources_cfg=cfgs,
+            join_field="correlation_id",
+            join_value="nonexistent-id",
+            since=None,
+        )
+        assert result["entries"] == [], "join_value 不匹配时应返回空列表"
 
     def test_level_filter_applies_to_all_sources(self, cross_query_sources):
         # level=error 过滤后，所有返回 entry 的 _level 均为 error
@@ -563,6 +584,7 @@ class TestCrossQuery:
         result = cross_query(
             sources_cfg=cfgs,
             join_field="correlation_id",
+            join_value="run-001",
             since=None,
             level="error",
         )
@@ -575,7 +597,7 @@ class TestCrossQuery:
         cfgs = cross_query_sources
         single = {"frontend": cfgs["frontend"]}
         with pytest.raises(ValueError, match="至少需要 2"):
-            cross_query(sources_cfg=single, join_field="correlation_id")
+            cross_query(sources_cfg=single, join_field="correlation_id", join_value="run-001")
 
 
 # ---------------------------------------------------------------------------

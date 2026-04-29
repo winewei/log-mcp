@@ -149,7 +149,7 @@ class TestToolSchema:
         assert by_name["summary"].inputSchema["required"] == ["source"]
         assert by_name["register_source"].inputSchema["required"] == ["name", "description", "path"]
         assert by_name["unregister_source"].inputSchema["required"] == ["name"]
-        assert by_name["cross_query"].inputSchema["required"] == ["sources", "join_field"]
+        assert by_name["cross_query"].inputSchema["required"] == ["sources", "join_field", "join_value"]
 
     def test_cross_query_sources_has_min_items_two(self):
         by_name = {t.name: t for t in run_async(srv.list_tools())}
@@ -395,6 +395,7 @@ class TestQueryHandlers:
         result = run_async(srv._handle_cross_query({
             "sources": ["api", "client"],
             "join_field": "correlation_id",
+            "join_value": "run-001",
             "since": None,
         }))
         data = _json(result)

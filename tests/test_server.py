@@ -135,6 +135,7 @@ class TestSourceNotFound:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["ghost", "also-ghost"],
             "join_field": "correlation_id",
+            "join_value": "r1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_SOURCE_NOT_FOUND)
@@ -286,6 +287,7 @@ class TestJoinFieldNotAllowed:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["src-a", "src-b"],
             "join_field": "email",
+            "join_value": "r1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_JOIN_FIELD_NOT_ALLOWED)
@@ -299,6 +301,7 @@ class TestJoinFieldNotAllowed:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["src-a", "src-b"],
             "join_field": "malicious_field",
+            "join_value": "r1",
         }))
         data = _json(result)
         suggestion = data["suggestion"]
@@ -310,6 +313,7 @@ class TestJoinFieldNotAllowed:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["src-a", "src-b"],
             "join_field": "email",
+            "join_value": "r1",
         }))
         data = _json(result)
         assert "correlation_id" in data["hints"]["allowed_join_fields"]
@@ -350,6 +354,7 @@ class TestInternalError:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["test-api"],
             "join_field": "correlation_id",
+            "join_value": "r1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_INTERNAL)
@@ -395,6 +400,7 @@ class TestNoLegacyErrorField:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["src-a", "src-b"],
             "join_field": "email",
+            "join_value": "r1",
         }))
         data = _json(result)
         assert "error" not in data
@@ -428,6 +434,7 @@ class TestCrossQueryEngineErrors:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["test-api"],
             "join_field": "correlation_id",
+            "join_value": "r1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_INTERNAL)
@@ -453,6 +460,7 @@ class TestCrossQueryEngineErrors:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["src-a", "src-nofile"],
             "join_field": "correlation_id",
+            "join_value": "r1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_SOURCE_NOT_FOUND)
@@ -821,13 +829,22 @@ class TestCrossQueryUnionTimeline:
         assert props["fields"]["type"] == "array"
         assert props["fields"]["items"]["type"] == "string"
 
+    def test_cross_query_inputschema_has_join_value(self):
+        """cross_query inputSchema 应含 join_value 必填参数（string）。"""
+        schema = self._get_tool_schema("cross_query")
+        props = schema.get("properties", {})
+        assert "join_value" in props, f"cross_query inputSchema 缺少 join_value 参数，实际 props: {list(props.keys())}"
+        assert props["join_value"]["type"] == "string"
+        assert "join_value" in schema.get("required", []), "join_value 应在 required 列表中"
+
     def test_handle_cross_query_passes_fields_to_engine(self, timeline_registry, monkeypatch):
-        """_handle_cross_query 应将 fields 参数透传到 engine.cross_query。"""
+        """_handle_cross_query 应将 fields / join_value 参数透传到 engine.cross_query。"""
         captured = {}
         original_cq = srv.cross_query
 
         def capturing_cq(*args, **kwargs):
             captured["fields"] = kwargs.get("fields")
+            captured["join_value"] = kwargs.get("join_value")
             return original_cq(*args, **kwargs)
 
         monkeypatch.setattr(srv, "cross_query", capturing_cq)
@@ -835,6 +852,7 @@ class TestCrossQueryUnionTimeline:
         run_async(srv.call_tool("cross_query", {
             "sources": ["fe", "be"],
             "join_field": "correlation_id",
+            "join_value": "cid-1",
             "since": None,
             "fields": ["_timestamp", "_source", "_message"],
         }))
@@ -842,12 +860,16 @@ class TestCrossQueryUnionTimeline:
         assert captured.get("fields") == ["_timestamp", "_source", "_message"], (
             f"fields 未正确透传，实际捕获: {captured.get('fields')}"
         )
+        assert captured.get("join_value") == "cid-1", (
+            f"join_value 未正确透传，实际捕获: {captured.get('join_value')}"
+        )
 
     def test_cross_query_returns_source_field(self, timeline_registry):
         """cross_query 返回的 entry 均含 _source 字段。"""
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["fe", "be"],
             "join_field": "correlation_id",
+            "join_value": "cid-1",
             "since": None,
         }))
         data = _json(result)
@@ -857,11 +879,27 @@ class TestCrossQueryUnionTimeline:
             assert "_source" in entry
             assert entry["_source"] in ("fe", "be")
 
+    def test_join_value_filters_unrelated_entries(self, timeline_registry):
+        """join_value 过滤：cid-2 只存在于 be，返回记录不含 fe 的条目。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["fe", "be"],
+            "join_field": "correlation_id",
+            "join_value": "cid-2",
+            "since": None,
+        }))
+        data = _json(result)
+        assert "entries" in data
+        # cid-2 只有 be 里的 1 条，fe 里没有
+        for entry in data["entries"]:
+            assert entry.get("_source") == "be"
+            assert entry.get("correlation_id") == "cid-2"
+
     def test_join_field_not_allowed_returns_structured_error(self, timeline_registry):
         """email 不在白名单，返回 join_field_not_allowed 结构化错误。"""
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["fe", "be"],
             "join_field": "email",
+            "join_value": "cid-1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_JOIN_FIELD_NOT_ALLOWED)
@@ -873,6 +911,7 @@ class TestCrossQueryUnionTimeline:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["fe"],
             "join_field": "correlation_id",
+            "join_value": "cid-1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_INTERNAL)
@@ -882,6 +921,7 @@ class TestCrossQueryUnionTimeline:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["fe", "ghost-source"],
             "join_field": "correlation_id",
+            "join_value": "cid-1",
         }))
         data = _json(result)
         _assert_error_schema(data, srv.ERROR_SOURCE_NOT_FOUND)
@@ -892,6 +932,7 @@ class TestCrossQueryUnionTimeline:
         result = run_async(srv.call_tool("cross_query", {
             "sources": ["fe", "be"],
             "join_field": "correlation_id",
+            "join_value": "cid-1",
             "since": None,
             "fields": ["_timestamp", "_source", "_message"],
         }))
