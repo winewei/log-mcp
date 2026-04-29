@@ -446,12 +446,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if broken_map_fields:
                     bad_field = broken_map_fields[0]
 
-            # 候选池 = observed_fields ∪ field_map.values()（去重）
-            field_map_values = list(field_map.values())
-            all_fields = list(dict.fromkeys(observed_fields + field_map_values))
+            # 候选池仅用 observed_fields（文件真实列名），禁止混入 field_map values。
+            # field_map values 可能是错误配置的列名（根因），加入候选池会导致自匹配，误导用户。
+            candidate_pool = list(observed_fields)
 
             if bad_field:
-                candidates = _get_close_field_matches(bad_field, all_fields)
+                candidates = difflib.get_close_matches(bad_field, candidate_pool, n=3)
+                if not candidates:
+                    candidates = candidate_pool[:3]
 
             # 4. 兜底：bad_field 仍为空时，将 observed_fields 前 3 个作为"已观察列"hints 返回
             if not candidates and observed_fields:

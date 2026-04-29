@@ -590,3 +590,51 @@ class TestBrokenFieldMapNoFilters:
         assert isinstance(candidates, list), "candidate_fields 应为列表"
         assert len(candidates) > 0, f"summary handler 候选列表不应为空，实际: {candidates}"
         assert "message" in candidates, f"observed 列 'message' 应在候选中，实际: {candidates}"
+
+
+# ---------------------------------------------------------------------------
+# Round 4 regression：候选池不含 field_map values（防止自匹配）
+# ---------------------------------------------------------------------------
+
+class TestCandidatePoolExcludesFieldMapValues:
+    """
+    regression #6：field_map={"message": "body"} 时，日志真实列为 "message"。
+    候选池应仅含 observed_fields，不应含 field_map values（"body"）。
+    - candidate_fields 应包含 "message"（真实列）
+    - candidate_fields 不应包含 "body"（field_map 错误配置的 target）
+    """
+
+    def test_candidate_excludes_field_map_target_includes_real_column(self, tmp_path, monkeypatch):
+        """
+        field_map={"message": "body"}，日志真实列含 "message"。
+        query 触发 BinderException → candidate_fields 含 "message"，不含 "body"。
+        """
+        log_path = tmp_path / "app.jsonl"
+        _write_jsonl(log_path, [
+            {"timestamp": "2026-04-29T10:00:00+00:00", "level": "info", "message": "hello"},
+        ])
+        reg = SourceRegistry()
+        # field_map 将 "message" 映射到不存在的 "body"，触发 BinderException
+        reg.register(
+            "app-bad-map",
+            description="field_map target 不存在的源",
+            path=str(log_path),
+            field_map={"message": "body"},
+        )
+        monkeypatch.setattr(srv, "registry", reg)
+
+        result = run_async(srv.call_tool("query", {"source": "app-bad-map"}))
+        data = _json(result)
+
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        candidates = data["hints"].get("candidate_fields", [])
+        assert isinstance(candidates, list), "candidate_fields 应为列表"
+
+        # 真实列 "message" 应出现在候选中
+        assert "message" in candidates, (
+            f"文件真实列 'message' 应在候选中，实际候选: {candidates}"
+        )
+        # field_map target "body" 不应出现在候选中（防止自匹配）
+        assert "body" not in candidates, (
+            f"field_map target 'body' 不应在候选中，实际候选: {candidates}"
+        )
