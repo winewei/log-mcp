@@ -376,3 +376,109 @@ class TestNoLegacyErrorField:
         result = run_async(srv.call_tool("unregister_source", {"name": "ghost"}))
         data = _json(result)
         assert "error" not in data
+
+
+# ---------------------------------------------------------------------------
+# Issue #1 修复验证：cross_query engine 层异常路径
+# ---------------------------------------------------------------------------
+
+class TestCrossQueryEngineErrors:
+    """验证 engine 层不再返回旧 {"error": ...}，而是通过抛异常让 server 层映射结构化错误。"""
+
+    def test_cross_query_sources_less_than_2_returns_internal_error(self, registry_with_api):
+        """sources < 2 时 engine 抛 ValueError，server 层映射为 internal_error（含说明）。"""
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["test-api"],
+            "join_field": "correlation_id",
+        }))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_INTERNAL)
+        assert "2" in data["detail"] or "两" in data["detail"]
+        # 旧 {"error": ...} 不存在
+        assert "error" not in data
+
+    def test_cross_query_source_no_files_returns_source_not_found(self, tmp_path, monkeypatch):
+        """源存在但无可用文件时 engine 抛 KeyError，server 层映射为 source_not_found。"""
+        # 注册两个源，其中 ghost-file 的路径不存在（无文件）
+        reg = __import__("log_mcp.config", fromlist=["SourceRegistry"]).SourceRegistry()
+        # src-a 有真实文件
+        a_path = tmp_path / "a.jsonl"
+        _write_jsonl(a_path, [
+            {"timestamp": "2026-04-15T10:00:01+00:00", "level": "info",
+             "message": "a", "correlation_id": "r1"},
+        ])
+        reg.register("src-a", description="A", path=str(a_path))
+        # src-nofile 路径根本不存在
+        reg.register("src-nofile", description="无文件", path=str(tmp_path / "nonexistent.jsonl"))
+        monkeypatch.setattr(srv, "registry", reg)
+
+        result = run_async(srv.call_tool("cross_query", {
+            "sources": ["src-a", "src-nofile"],
+            "join_field": "correlation_id",
+        }))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_SOURCE_NOT_FOUND)
+        assert "available_sources" in data["hints"]
+        # 旧 {"error": ...} 不存在
+        assert "error" not in data
+
+
+# ---------------------------------------------------------------------------
+# Issue #2 修复验证：field_not_found hints 基于实际观察列
+# ---------------------------------------------------------------------------
+
+class TestFieldNotFoundWithObservedColumns:
+    """验证 BinderException 触发时，候选字段基于实际查询到的列名做近似匹配。"""
+
+    def test_binder_exception_candidates_from_real_columns(self, tmp_path, monkeypatch):
+        """
+        日志中真实存在 status/duration_ms/path 列，未在 field_map 声明。
+        field_not_found 触发时，hints.candidate_fields 应能匹配到真实列名。
+        """
+        api_path = tmp_path / "real_cols.jsonl"
+        _write_jsonl(api_path, [
+            {"timestamp": "2026-04-15T10:00:01+00:00", "level": "info",
+             "message": "ok", "status": 200, "duration_ms": 45, "path": "/api"},
+        ])
+        reg = __import__("log_mcp.config", fromlist=["SourceRegistry"]).SourceRegistry()
+        reg.register("real-cols", description="真实列", path=str(api_path))
+        monkeypatch.setattr(srv, "registry", reg)
+
+        # 触发真实的 BinderException（字段名故意拼错但接近 "status"）
+        result = run_async(srv.call_tool("query", {
+            "source": "real-cols",
+            "field_filters": {"statuss": "200"},  # 故意拼错，期望近似匹配到 status
+        }))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        candidates = data["hints"].get("candidate_fields", [])
+        # 实际列 status 应出现在候选中（difflib 近似匹配）
+        assert "status" in candidates, f"期望 status 在候选中，实际候选: {candidates}"
+
+    def test_binder_exception_fallback_when_probe_fails(self, registry_with_api, monkeypatch):
+        """
+        观察查询本身失败时，安全回退到 field_map 逻辑，不崩溃，候选字段列表存在（可为空）。
+        """
+        async def raise_binder(*args, **kwargs):
+            raise duckdb.BinderException("Column 'no_such' not found")
+
+        with patch.object(srv, "_handle_query", side_effect=raise_binder):
+            # 同时让 _build_base_sql 抛异常，模拟探查失败
+            from log_mcp import engine as eng_mod
+            original_build = eng_mod._build_base_sql
+
+            def broken_build(*args, **kwargs):
+                raise RuntimeError("模拟探查失败")
+
+            monkeypatch.setattr(eng_mod, "_build_base_sql", broken_build)
+
+            result = run_async(srv.call_tool("query", {
+                "source": "test-api",
+                "field_filters": {"no_such": "val"},
+            }))
+
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        # 不崩溃，candidate_fields 存在（可为空列表）
+        assert "candidate_fields" in data["hints"]
+        assert isinstance(data["hints"]["candidate_fields"], list)

@@ -517,7 +517,7 @@ def cross_query(
 
     source_names = list(sources_cfg.keys())
     if len(source_names) < 2:
-        return {"error": "cross_query 至少需要 2 个源"}
+        raise ValueError("cross_query 至少需要 2 个日志源")
 
     cte_parts: list[str] = []
     all_params: list = []
@@ -525,7 +525,7 @@ def cross_query(
     for i, (name, cfg) in enumerate(sources_cfg.items()):
         select_expr, from_clause = _build_base_sql(cfg, name)
         if not from_clause:
-            return {"error": f"源 '{name}' 无可用文件"}
+            raise KeyError(name)
 
         where_str, params = _build_where(level, None, None, since, None)
         # 重新编号参数，使各 CTE 的参数不冲突

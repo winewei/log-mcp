@@ -401,26 +401,44 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     except duckdb.BinderException as e:
         # 字段引用失败：返回 field_not_found，并用 difflib 给出候选
         err_msg = str(e)
-        # 从错误消息中提取被引用的字段名（尽力而为）
+        # 从 field_filters 中提取被引用的字段名（尽力而为）
         bad_field = ""
-        for arg_key in ("field_filters",):
-            filters = arguments.get(arg_key) or {}
-            if isinstance(filters, dict):
-                bad_field = next(iter(filters.keys()), "")
-                break
+        filters = arguments.get("field_filters") or {}
+        if isinstance(filters, dict):
+            bad_field = next(iter(filters.keys()), "")
 
-        # 获取该源已观察的字段名作为近似匹配候选
+        # 通过一次极小查询获取实际存在的列名，用于近似匹配
         candidates: list[str] = []
         try:
+            from .engine import _build_base_sql, _get_conn
             source_name = arguments.get("source", "")
             cfg = registry.get(source_name)
             field_map = cfg.get("field_map") or {}
-            # 标准化字段 + 映射后字段均纳入候选
-            known_fields = list(field_map.values()) + ["_timestamp", "_level", "_message", "_source"]
+            select_expr, from_clause = _build_base_sql(cfg, source_name)
+            if from_clause:
+                # 执行一次 LIMIT 1 查询取实际列名
+                probe_sql = f"SELECT {select_expr} FROM {from_clause} LIMIT 1"
+                conn = _get_conn()
+                probe_result = conn.execute(probe_sql)
+                observed_fields = [desc[0] for desc in probe_result.description]
+            else:
+                observed_fields = []
+            # 将 field_map 中声明的字段也纳入候选，去重合并
+            declared_fields = list(field_map.values()) + ["_timestamp", "_level", "_message", "_source"]
+            all_fields = list(dict.fromkeys(observed_fields + declared_fields))
             if bad_field:
-                candidates = _get_close_field_matches(bad_field, known_fields)
+                candidates = _get_close_field_matches(bad_field, all_fields)
         except Exception:
-            pass
+            # 观察查询失败时安全回退：仅用 field_map 中已知字段
+            try:
+                source_name = arguments.get("source", "")
+                cfg = registry.get(source_name)
+                field_map = cfg.get("field_map") or {}
+                known_fields = list(field_map.values()) + ["_timestamp", "_level", "_message", "_source"]
+                if bad_field:
+                    candidates = _get_close_field_matches(bad_field, known_fields)
+            except Exception:
+                pass
 
         return _error_response(
             ERROR_FIELD_NOT_FOUND,
