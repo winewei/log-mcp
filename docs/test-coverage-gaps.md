@@ -1,5 +1,11 @@
 # 测试覆盖缺口与补全方案
 
+> **状态：已实施（2026-04-16）**
+>
+> 文档中提出的 3 个 changes（`add-config-tests` / `add-server-handler-tests` / `add-server-smoke-test`）均已实施并归档。
+> 当前测试覆盖：`tests/test_config.py` 30 用例 + `tests/test_engine.py` 64 用例 + `tests/test_server.py` 49 用例 + `tests/test_server_handlers.py` 30 用例 = **173 用例**。
+> 本文档保留作为决策记录。
+
 ## 背景
 
 当前工程 48 个测试全部集中于 `tests/test_engine.py`，只覆盖 SQL 引擎层（`log_mcp/engine.py`）。其余两个核心模块（`log_mcp/config.py`、`log_mcp/server.py`）**完全没有测试保护**，这些恰恰是近期动态调整日志源、Claude Code 交互时频繁走到的代码路径。

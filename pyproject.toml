@@ -1,12 +1,29 @@
 [project]
 name = "log-mcp"
 version = "0.1.0"
+description = "通用日志查询 MCP Server，为 AI Agent 提供基于 DuckDB SQL 的结构化日志查询、聚合与跨源时间线重建。"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+keywords = ["mcp", "logs", "duckdb", "claude", "agent", "observability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Logging",
+    "Topic :: Software Development :: Debuggers",
+]
 dependencies = [
     "duckdb>=1.2",
     "mcp>=1.0",
     "pyyaml>=6.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
 
 [build-system]
 requires = ["setuptools>=68"]

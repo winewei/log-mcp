@@ -1,5 +1,15 @@
 # log-mcp Agent-first 演进方案
 
+> **状态：已实施（2026-04-29）**
+>
+> 本文档是历史设计方案，对应 4 个 OpenSpec changes 已全部归档：
+> - `2026-04-29-add-structured-error-response`
+> - `2026-04-29-add-field-projection-layer`
+> - `2026-04-29-refactor-cross-query-to-union-timeline`
+> - `2026-04-29-rewrite-tool-descriptions-when-to-use`
+>
+> 当前实际行为以 `openspec/specs/` 与代码为准，本文档保留作为决策记录。
+
 ## 1. 背景
 
 经过自检与代码核对，当前实现存在两个事实层面的缺陷以及一组提升 Agent 闭环效率的机会：

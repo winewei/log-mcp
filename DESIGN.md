@@ -11,7 +11,7 @@ log-mcp 以 MCP 协议向 Agent 暴露参数化日志查询能力，覆盖以下
 | 代码变更后快速定位报错 | 按时间窗口 + 级别过滤 | `query` / `tail` |
 | 单次请求/测试的调用链排障 | 按 `correlation_id` / `trace_id` 精确匹配 | `query` + `field_filters` |
 | 服务健康度聚合 | 按维度分组计数、分位数统计、时间桶趋势 | `summary` |
-| 跨服务/跨端链路重建 | 多日志源通过共享字段 INNER JOIN | `cross_query` |
+| 跨服务/跨端链路重建 | 多日志源通过共享字段 `UNION ALL BY NAME` 合并为时间线 | `cross_query` |
 | Agent 探索未知项目 | 动态注册日志源，无需重启 | `register_source` |
 
 **约束**：log-mcp 是**只读消费者**，通过文件系统读取日志文件，不侵入日志生产端运行时。
@@ -97,13 +97,14 @@ sources:
 
 ### 标准字段（归一化后）
 
-MCP 查询统一使用这三个标准字段名，`field_map` 负责翻译：
+MCP 查询统一使用以下标准字段名（均带 `_` 前缀返回），`field_map` 负责把源字段翻译到前 3 个；`_source` 由 MCP 注入，无需配置。
 
 | 标准字段 | 含义 | 默认源字段名（不配 field_map 时）|
 |----------|------|------|
-| `timestamp` | 事件时间 | `timestamp` |
-| `level` | 日志级别 | `level` |
-| `message` | 事件描述 | `message` |
+| `_timestamp` | 事件时间 | `timestamp` |
+| `_level` | 日志级别 | `level` |
+| `_message` | 事件描述 | `message` |
+| `_source` | 日志源名称（MCP 注入，cross_query / 字段裁剪默认保留） | — |
 
 其余字段**原样透传**，Agent 可通过 `field_filters` 按任意原始字段查询。
 
@@ -148,6 +149,7 @@ MCP 查询统一使用这三个标准字段名，`field_map` 负责翻译：
 | `until` | string | 否 | 结束时间，同上 |
 | `limit` | number | 否 | 返回条数上限，默认 50，最大 500 |
 | `offset` | number | 否 | 跳过前 N 条结果，默认 0 |
+| `fields` | string[] | 否 | 返回字段白名单；未传时按默认裁剪策略（见 §6.4） |
 
 **`field_filters` 语法**：
 
@@ -202,6 +204,7 @@ MCP 查询统一使用这三个标准字段名，`field_map` 负责翻译：
 | `count` | number | 否 | 返回条数，默认 20，最大 200 |
 | `level` | string | 否 | 过滤级别 |
 | `agent_source` | string | 否 | 快捷过滤，等价于 `field_filters.agent_source` |
+| `fields` | string[] | 否 | 返回字段白名单；未传时按默认裁剪策略（见 §6.4） |
 
 **返回**：同 `query`，但从最新到最旧排序。
 
@@ -249,28 +252,40 @@ MCP 查询统一使用这三个标准字段名，`field_map` 负责翻译：
 
 ### 5.5 `cross_query`
 
-跨源关联查询，通过共享字段（如 `correlation_id`）对多个日志源执行 INNER JOIN。
+跨源时间线重建：通过共享字段（如 `correlation_id`）锁定一次调用链 ID，对多个日志源执行 `UNION ALL BY NAME` 合并，按 `_timestamp` 升序排序输出统一时间线。
 
 **参数**：
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `sources` | string[] | 是 | 参与关联的源名称列表，至少 2 个 |
-| `join_field` | string | 是 | 用于 JOIN 的字段名（白名单限定） |
+| `join_field` | string | 是 | 用于关联的字段名（白名单限定） |
+| `join_value` | string | 是 | 锁定的调用链 ID 取值，例如某个 `correlation_id` 字面值 |
 | `level` | string | 否 | 级别过滤，应用于所有源 |
-| `since` | string | 否 | 时间范围起点 |
-| `limit` | number | 否 | 返回条数上限，默认 50 |
+| `since` | string | 否 | 时间范围起点，缺省 `1h`（防止无界扫描） |
+| `limit` | number | 否 | 返回条数上限，默认 50，最大 500 |
+| `fields` | string[] | 否 | 返回字段白名单；未传时按默认裁剪策略（见 §6.4） |
 
-**安全约束**：`join_field` 必须在白名单内（`correlation_id` / `request_id` / `trace_id` / `session_id` / `user_id` / `transaction_id` / `span_id` / `order_id`），防止 SQL 注入。
+**安全约束**：
+
+- `join_field` 必须在白名单内（`correlation_id` / `request_id` / `trace_id` / `session_id` / `user_id` / `transaction_id` / `span_id` / `order_id`），不在则返回 `error_code=join_field_not_allowed`
+- `join_value` 在 SQL 双侧都执行 `CAST(... AS VARCHAR)`，并在 Python 侧 `str()` 强转，避免 DuckDB JSON 列类型推断引发的反向强转或 abort
 
 **返回**：
 ```json
 {
   "entries": [
-    {"_source": "api-server", "_timestamp": "...", "correlation_id": "run-001", "...": "..."}
+    {"_source": "api-server", "_timestamp": "2026-04-29T10:00:01Z", "correlation_id": "run-001", "_message": "request_received", "...": "..."},
+    {"_source": "worker",     "_timestamp": "2026-04-29T10:00:03Z", "correlation_id": "run-001", "_message": "task_dispatched", "...": "..."}
   ]
 }
 ```
+
+**关键行为**：
+
+- 行数 = 各源命中数之和（不再是 INNER JOIN 的笛卡尔积）
+- 每条记录必有 `_source` 字段标识来源
+- 字段不同的两个源合并时缺失字段自动补 `NULL`（DuckDB `UNION ALL BY NAME` 按列名对齐）
 
 ### 5.6 `register_source`
 
@@ -360,7 +375,31 @@ async def main():
         await server.run(read, write, server.create_initialization_options())
 ```
 
-### 6.4 CLI 入口 (`__main__.py`)
+### 6.4 字段裁剪层 (`engine._project_fields`)
+
+`query` / `tail` / `cross_query` 在结果序列化前统一经过 `_project_fields(rows, fields, truncate_threshold=4096)`：
+
+- **`fields=None`（默认）**：保留四个归一化字段 `_timestamp` / `_level` / `_message` / `_source` 全值；其他字段按 byte size 检查，超过 4 KB（默认）则替换为 `<truncated:1.2MB>` 形式占位符（含可读单位）
+- **`fields=list[str]`（白名单）**：仅返回 `fields` 列出的字段（归一化字段如需保留必须显式列入），白名单内字段**不参与大字段截断**（原值返回）
+- **不存在字段**：`fields` 中含未观察到的字段名时，该字段在输出 entry 中为 `None`，不报错
+
+`summary` 不做裁剪（聚合结果天然小）。
+
+### 6.5 结构化错误层 (`server._make_error` / `_error_response`)
+
+任何 tool handler 异常路径统一返回 JSON `{error_code, detail, suggestion, hints}`：
+
+| `error_code` | 触发条件 | hints 重点 |
+|---|---|---|
+| `source_not_found` | `KeyError`：调用未注册的源名 | `available_sources` 当前可用源列表 |
+| `field_not_found` | `duckdb.BinderException`：字段引用失败 | `candidate_fields`（基于一次轻量原始 probe 的实际列名做 difflib 近似匹配，最多 3 个） |
+| `time_parse_error` | `_parse_time` `ValueError`：时间格式非法 | `valid_examples` 合法示例 |
+| `join_field_not_allowed` | `cross_query` `join_field` 不在白名单 | 白名单全集 |
+| `internal_error` | 其他未预期异常 | `exception_type` 异常类名 |
+
+候选字段计算遵循"observed columns only"原则——不混入 `field_map.values()`（因其本身可能是错误配置项），避免坏 target 自匹配误导用户。
+
+### 6.6 CLI 入口 (`__main__.py`)
 
 ```python
 import argparse

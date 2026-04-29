@@ -1,5 +1,11 @@
 # DuckDB 查询引擎重构方案
 
+> **状态：已实施（2026-04-16）**
+>
+> 本文档是历史设计方案，对应 6 个 OpenSpec changes 已全部归档（见 `openspec/changes/archive/2026-04-15-add-duckdb-dependency` 等）。
+> 旧的 `reader.py` / `query.py` 已删除；`engine.py` 是当前唯一查询路径。
+> 当前实际行为以 `openspec/specs/duckdb-query-engine/spec.md` 与代码为准。
+
 ## 1. 动机
 
 当前 `reader.py`（137 行）+ `query.py`（224 行）实现了一套自研查询引擎：逐行 `json.loads` 解析、Python 循环过滤、手写聚合。存在以下瓶颈：

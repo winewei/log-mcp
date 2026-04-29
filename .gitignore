@@ -60,3 +60,7 @@ tmp/
 # 本地配置（非示例文件）
 sources.yaml
 .mcp.json
+
+# OpenSpec 本地状态与 review 日志
+openspec/.plan-state.md
+openspec/tmp_task/

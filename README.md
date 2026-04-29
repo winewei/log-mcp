@@ -20,10 +20,12 @@ AI Agent（如 Claude Code）在辅助开发与测试时，频繁需要回答以
 - **语言/框架无关**：任何产出 JSONL 或纯文本日志的服务都可接入（Python/Go/Node/Java/Rust ...）
 - **DuckDB SQL 引擎**：过滤、排序、聚合、JOIN 全部在引擎层完成，性能可承载数百万行
 - **参数化查询**：所有用户输入通过 `$N` 参数绑定，杜绝 SQL 注入
-- **多源字段归一化**：通过 `field_map` 将不同服务的字段名映射到统一的 `_timestamp` / `_level` / `_message`
+- **多源字段归一化**：通过 `field_map` 将不同服务的字段名映射到统一的 `_timestamp` / `_level` / `_message` / `_source`
 - **日志轮转感知**：自动发现 numeric（`.1/.2/.3`）、date（`.YYYY-MM-DD`）、none 三种轮转模式的历史文件
 - **动态注册**：无需重启即可增删日志源，可选持久化到配置文件
-- **跨源 JOIN**：通过 `correlation_id` 等字段在多个日志源间执行 INNER JOIN，重建分布式调用链
+- **跨源时间线**：通过 `correlation_id` 等字段在多个日志源间 `UNION ALL` 合并，按 `_timestamp` 重建调用链时序
+- **结构化错误响应**：异常路径统一返回 `{error_code, detail, suggestion, hints}` 四段式，Agent 可直接据此决定下一步
+- **Token-aware 输出**：`query` / `tail` / `cross_query` 默认对单字段 >4KB 自动截断为 `<truncated:size>` 占位符，并支持 `fields` 白名单进一步收窄
 - **零运维负担**：stdio transport 直连，内存模式运行，不占用额外端口
 
 ## 7 个 MCP Tools
@@ -31,10 +33,10 @@ AI Agent（如 Claude Code）在辅助开发与测试时，频繁需要回答以
 | Tool | 说明 |
 |------|------|
 | `list_sources` | 列出已注册的日志源及其文件状态 |
-| `query` | 主力查询：级别/正则/任意字段/时间范围过滤，支持 `offset` 分页 |
-| `tail` | 反向取最新 N 条，精确返回不受过滤命中率影响 |
+| `query` | 主力查询：级别/正则/任意字段/时间范围过滤，支持 `offset` 分页与 `fields` 白名单 |
+| `tail` | 反向取最新 N 条，精确返回不受过滤命中率影响，支持 `fields` 白名单 |
 | `summary` | 聚合统计：total / level_counts / top_messages / groups，支持分位数（p50/p95/p99）和时间桶（1m/5m/1h） |
-| `cross_query` | 跨源关联查询：通过共享字段对多个源执行 INNER JOIN |
+| `cross_query` | 跨源时间线重建：用 `join_field` + `join_value` 锁定调用链，多源 `UNION ALL` 后按 `_timestamp` 排序 |
 | `register_source` | 动态注册日志源，可选写入 `sources.yaml` |
 | `unregister_source` | 注销日志源 |
 
@@ -220,11 +222,14 @@ sources:
 cross_query(
   sources=["api-server", "test-runner"],
   join_field="correlation_id",
-  level="error",
+  join_value="run-abc-123",
   since="10m"
 )
-→ 自动关联客户端操作与服务端响应，还原完整交互时序
+→ 多源命中条目通过 UNION ALL 合并，按 _timestamp 排序输出统一时间线，
+  每条记录带 _source 字段标识来源；行数 = 各源命中数之和（不再笛卡尔积）
 ```
+
+`since` 缺省为 `1h`，避免无界扫描；`join_field` 限定在白名单内（`correlation_id` / `request_id` / `trace_id` / `session_id` / `user_id` / `transaction_id` / `span_id` / `order_id`）。
 
 ### 场景 4：Agent 自主探索未知项目
 
@@ -244,10 +249,11 @@ log-mcp/
 ├── sources.example.yaml
 ├── log_mcp/
 │   ├── __main__.py        # CLI 入口
-│   ├── server.py          # MCP Server + 7 个 tool schemas
+│   ├── server.py          # MCP Server + 7 个 tool schemas + 结构化错误层
 │   ├── config.py          # sources.yaml 加载与校验
-│   └── engine.py          # DuckDB SQL 引擎
-├── tests/                 # pytest 测试（48 个用例）
+│   └── engine.py          # DuckDB SQL 引擎 + 字段裁剪层
+├── tests/                 # pytest 测试（173 个用例覆盖 engine/server/config）
+├── docs/                  # 设计文档（含 DuckDB 迁移、Agent-first 演进等历史方案）
 └── openspec/              # 规格驱动开发
     ├── specs/             # 当前能力规格
     └── changes/archive/   # 已归档的变更提案
@@ -272,7 +278,8 @@ openspec list
 - `mcp>=1.0` — MCP SDK
 - `duckdb>=1.2` — SQL 查询引擎
 - `pyyaml>=6.0` — 配置解析
-- `pytz` — DuckDB `time_bucket` 函数依赖（传递安装）
+
+测试依赖：`pytest`（不在运行时依赖中）。
 
 ## 设计理念
 
@@ -292,10 +299,33 @@ openspec list
 - 跨机房的分布式日志聚合
 - 实时告警与长期归档
 
-## 常见问题
+## 错误响应
 
-**Q: 调用 tool 时返回 `BinderException: Referenced column "xxx" not found`**
-源配置的 `field_map` 与日志实际字段名不一致。读一条真实日志核对，通过 `unregister_source` + `register_source` 重新注册即可（或直接改 `sources.yaml` 后重启）。
+任何 tool 调用进入异常路径都返回统一结构化 JSON，便于 Agent 程序化恢复：
+
+```json
+{
+  "error_code": "field_not_found",
+  "detail": "字段引用失败: Referenced column \"foo\" not found",
+  "suggestion": "请检查 field_filters 中的字段名是否正确，或调用 list_sources 查看实际 schema",
+  "hints": {
+    "candidate_fields": ["foo_id", "foo_bar"],
+    "duckdb_error": "..."
+  }
+}
+```
+
+`error_code` 枚举：
+
+| code | 触发条件 | hints 重点字段 |
+|------|---------|---------------|
+| `source_not_found` | 调用未注册的源名 | `available_sources` |
+| `field_not_found` | DuckDB BinderException / `field_map` 引用不存在的列 | `candidate_fields`（基于实际观察列做近似匹配） |
+| `time_parse_error` | `since` / `until` 格式非法 | `valid_examples` |
+| `join_field_not_allowed` | `cross_query.join_field` 不在白名单 | 白名单全集 |
+| `internal_error` | 其他未预期异常 | `exception_type` |
+
+## 常见问题
 
 **Q: `list_sources` 返回 `status: missing`**
 文件路径不存在或 MCP Server 进程无权读取。检查路径是否为绝对路径、文件是否存在、权限是否允许。
@@ -303,11 +333,17 @@ openspec list
 **Q: 每次调用 tool 都弹授权**
 未把 7 个 tool 加入 `.claude/settings.local.json` 的 `permissions.allow`，参照上方 [5. 接入 Claude Code](#5-接入-claude-code)。
 
-**Q: 查询返回结果过大被截断**
-`tail` / `query` 返回全字段；若日志含大 body/headers/cookie，建议：
+**Q: 查询返回结果过大撑爆 Agent 上下文**
+`query` / `tail` / `cross_query` 默认对单字段值 >4KB 自动替换为 `<truncated:1.2MB>` 占位符（`_timestamp` / `_level` / `_message` / `_source` 四个归一化字段不参与裁剪）。如仍嫌大：
+- 显式传 `fields=["_timestamp", "_message", "correlation_id"]` 仅返回白名单字段（白名单字段不参与截断）
 - 用 `summary` 先聚合再针对性下钻
 - 用 `field_filters` 收窄范围（如 `status: ">=400"`）
-- 用 `count` / `limit` 控制条数
+
+**Q: `cross_query` 调用为何要传 `join_value`**
+`join_value` 限定要追踪的具体调用链 ID（如某个 `correlation_id` 值）。不传等于"两源时间窗口内全部记录"——开销大、噪声多、与"链路追踪"语义不符。需要全量浏览改用 `query` 配合 `since`/`limit`。
+
+**Q: `cross_query` 默认时间窗口为何是 1h**
+跨源 UNION 在大数据集上无界扫描会拖慢响应并放大 token 消耗。`since` 默认 `1h` 对常见排障场景已够用；需要更长可显式传 `since="1d"` 等。
 
 ## License
 
