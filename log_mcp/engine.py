@@ -604,10 +604,16 @@ def cross_query(
 
         where_str, params = _build_where(level, None, None, since, None)
         # 重新编号参数偏移量，使各 CTE 的 $N 参数全局唯一不冲突
+        # 使用 regex 替换而非朴素字符串替换，避免 token-boundary bug：
+        # 当 offset >= 10 时，朴素替换会把已生成的 $11 内部的 $1 再次替换，
+        # 例如 $2→$11 后遍历到 $1 时 $11 中的 $1 被替换成 $1<offset>，
+        # 导致参数引用错误。regex 的 \$(\d+) 按完整数字 token 匹配，无此问题。
         offset = len(all_params)
-        adjusted_where = where_str
-        for j in range(len(params), 0, -1):
-            adjusted_where = adjusted_where.replace(f"${j}", f"${j + offset}")
+        adjusted_where = re.sub(
+            r'\$(\d+)',
+            lambda m: f'${int(m.group(1)) + offset}',
+            where_str,
+        )
         all_params.extend(params)
 
         # 追加 join_field 等值过滤，参数编号紧接已有参数之后

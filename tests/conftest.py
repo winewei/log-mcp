@@ -143,3 +143,41 @@ def cross_query_sources(tmp_dir):
     yield {"frontend": cfg_fe, "backend": cfg_be}
     file_fe.unlink(missing_ok=True)
     file_be.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def cross_query_4sources(tmp_dir):
+    """
+    构造 4 个 JSONL 源用于 token-boundary regression 测试。
+    4 个源 × 每源最多 3 个参数 → 第 4 源 offset=9，$1 偏移后为 $10，
+    若使用朴素字符串替换，$10 内部的 $1 会被再次替换为错误值。
+    每个源各含 2 条 correlation_id="r1" + level="info" 的记录，共 8 条。
+    """
+    sources: dict[str, dict] = {}
+    files: list[Path] = []
+    for idx, svc in enumerate(["svc_a", "svc_b", "svc_c", "svc_d"]):
+        filepath = tmp_dir / f"cross_4src_{svc}.jsonl"
+        entries = [
+            {
+                "timestamp": f"2026-04-29T10:00:{idx * 10 + row:02d}+00:00",
+                "level": "info",
+                "message": f"{svc}_msg_{row}",
+                "correlation_id": "r1",
+            }
+            for row in range(1, 3)
+        ]
+        with filepath.open("w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        sources[svc] = {
+            "path": str(filepath),
+            "rotation": "none",
+            "format": "jsonl",
+            "field_map": {},
+        }
+        files.append(filepath)
+
+    yield sources
+
+    for fp in files:
+        fp.unlink(missing_ok=True)

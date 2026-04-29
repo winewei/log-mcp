@@ -599,6 +599,24 @@ class TestCrossQuery:
         with pytest.raises(ValueError, match="至少需要 2"):
             cross_query(sources_cfg=single, join_field="correlation_id", join_value="run-001")
 
+    def test_4source_level_default_since_no_sql_error(self, cross_query_4sources):
+        # Regression：4 源 + level="info" + since=None（全量）+ join_value="r1"
+        # 4 个源各 2 条 info 记录，offset 在第 4 源时 >= 9，
+        # 朴素字符串替换会产生 token-boundary bug（$1 被二次替换 → $101 等）。
+        # 修复后不应抛 SQL 错误，且返回行数等于各源命中之和（4 源 × 2 条 = 8 条）。
+        # since=None 全量扫描，避免固定时间戳数据被相对时间窗口过滤。
+        result = cross_query(
+            sources_cfg=cross_query_4sources,
+            join_field="correlation_id",
+            join_value="r1",
+            level="info",
+            since=None,
+        )
+        assert "entries" in result
+        assert len(result["entries"]) == 8, (
+            f"期望 8 条（4 源 × 2 条），实际 {len(result['entries'])} 条"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestProjectFields：字段裁剪与白名单
