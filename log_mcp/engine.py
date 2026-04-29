@@ -616,9 +616,12 @@ def cross_query(
         )
         all_params.extend(params)
 
-        # 追加 join_field 等值过滤，参数编号紧接已有参数之后
+        # 追加 join_field 等值过滤，参数编号紧接已有参数之后。
+        # 使用 CAST("<join_field>" AS VARCHAR) 规避 DuckDB 对 JSON 列的类型推断：
+        # 若某源将 correlation_id 推断为 INTEGER，直接比较字符串 join_value 会强转
+        # 匹配失败甚至抛错，CAST 统一转为 VARCHAR 后再比对可安全跨类型匹配。
         join_param_idx = len(all_params) + 1
-        join_filter = f'"{join_field}" = ${join_param_idx}'
+        join_filter = f'CAST("{join_field}" AS VARCHAR) = ${join_param_idx}'
         adjusted_where = f"{adjusted_where} AND {join_filter}" if adjusted_where else join_filter
         all_params.append(join_value)
 

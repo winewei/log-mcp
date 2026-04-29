@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -600,22 +601,38 @@ class TestCrossQuery:
             cross_query(sources_cfg=single, join_field="correlation_id", join_value="run-001")
 
     def test_4source_level_default_since_no_sql_error(self, cross_query_4sources):
-        # Regression：4 源 + level="info" + since=None（全量）+ join_value="r1"
-        # 4 个源各 2 条 info 记录，offset 在第 4 源时 >= 9，
-        # 朴素字符串替换会产生 token-boundary bug（$1 被二次替换 → $101 等）。
-        # 修复后不应抛 SQL 错误，且返回行数等于各源命中之和（4 源 × 2 条 = 8 条）。
-        # since=None 全量扫描，避免固定时间戳数据被相对时间窗口过滤。
-        result = cross_query(
-            sources_cfg=cross_query_4sources,
-            join_field="correlation_id",
-            join_value="r1",
-            level="info",
-            since=None,
-        )
+        # Regression：4 源 + level="info" + 绝对 since + join_value="r1"
+        # 显式传 since="2026-04-29T00:00:00Z"，每源产生 3 个参数（level + since + join_value）。
+        # 第 4 源 offset=9，regex 替换后 $1→$10 / $2→$11 / $3→$12，
+        # 验证 token-boundary 修复：SQL 中必须出现 $10、$12 等高编号占位符。
+        import log_mcp.engine as _eng
+
+        captured_sql: list[str] = []
+        _real_execute = _eng._execute
+
+        def _spy(sql: str, params: list) -> list[dict]:
+            captured_sql.append(sql)
+            return _real_execute(sql, params)
+
+        with patch.object(_eng, "_execute", side_effect=_spy):
+            # wraps=None + side_effect 透传真实逻辑
+            result = cross_query(
+                sources_cfg=cross_query_4sources,
+                join_field="correlation_id",
+                join_value="r1",
+                level="info",
+                since="2026-04-29T00:00:00Z",
+            )
+
         assert "entries" in result
         assert len(result["entries"]) == 8, (
             f"期望 8 条（4 源 × 2 条），实际 {len(result['entries'])} 条"
         )
+        # 验证生成的 SQL 包含高编号占位符（第 4 源参数偏移到 $10+）
+        assert captured_sql, "cross_query 未调用 _execute"
+        sql_text = captured_sql[0]
+        assert "$10" in sql_text, f"SQL 中未找到 $10，实际 SQL：\n{sql_text}"
+        assert "$12" in sql_text, f"SQL 中未找到 $12，实际 SQL：\n{sql_text}"
 
 
 # ---------------------------------------------------------------------------
