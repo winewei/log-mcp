@@ -520,3 +520,73 @@ class TestFieldNotFoundWithObservedColumns:
         # 不崩溃，candidate_fields 存在（可为空列表）
         assert "candidate_fields" in data["hints"]
         assert isinstance(data["hints"]["candidate_fields"], list)
+
+
+# ---------------------------------------------------------------------------
+# Round 3 修复验证：broken field_map + 无 field_filters → hints 含 observed 候选
+# ---------------------------------------------------------------------------
+
+class TestBrokenFieldMapNoFilters:
+    """
+    验证 field_map 配置错误（映射目标列不存在于日志文件）且 query 不带 field_filters 时，
+    BinderException 处理路径能从异常消息或 field_map 推导 bad_field，
+    并将 observed_fields 纳入 candidate_fields 提示。
+    """
+
+    @pytest.fixture
+    def broken_map_registry(self, tmp_path, monkeypatch):
+        """注册一个 field_map 指向不存在列的源（日志真实列为 message，field_map 配置 msg）。"""
+        log_path = tmp_path / "svc_broken.jsonl"
+        _write_jsonl(log_path, [
+            {"timestamp": "2026-04-29T10:00:00+00:00", "level": "info", "message": "hello"},
+        ])
+        reg = SourceRegistry()
+        # field_map: message -> "msg"，但文件实际列为 "message"，"msg" 不存在 → 必然触发 BinderException
+        reg.register(
+            "svc-broken",
+            description="field_map 指向不存在的列",
+            path=str(log_path),
+            field_map={"message": "msg"},
+        )
+        monkeypatch.setattr(srv, "registry", reg)
+        return reg
+
+    def test_broken_field_map_plain_query_hints_observed_columns(self, broken_map_registry):
+        """
+        query 仅传 source，不带 field_filters，field_map 错误触发 BinderException。
+        error_code=field_not_found，hints.candidate_fields 应包含文件实际存在的列（如 "message"）。
+        """
+        result = run_async(srv.call_tool("query", {"source": "svc-broken"}))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        candidates = data["hints"].get("candidate_fields", [])
+        assert isinstance(candidates, list), "candidate_fields 应为列表"
+        # 文件实际列名 "message" 应出现在候选中（来自 observed_fields 或近似匹配）
+        assert len(candidates) > 0, f"候选列表不应为空，实际: {candidates}"
+        assert "message" in candidates, f"observed 列 'message' 应在候选中，实际: {candidates}"
+
+    def test_broken_field_map_tail_handler_hints_observed_columns(self, broken_map_registry):
+        """
+        tail handler：field_map 错误，无 field_filters，BinderException 处理与 query 一致。
+        hints.candidate_fields 应包含文件实际存在的列。
+        """
+        result = run_async(srv.call_tool("tail", {"source": "svc-broken"}))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        candidates = data["hints"].get("candidate_fields", [])
+        assert isinstance(candidates, list), "candidate_fields 应为列表"
+        assert len(candidates) > 0, f"tail handler 候选列表不应为空，实际: {candidates}"
+        assert "message" in candidates, f"observed 列 'message' 应在候选中，实际: {candidates}"
+
+    def test_broken_field_map_summary_handler_hints_observed_columns(self, broken_map_registry):
+        """
+        summary handler：field_map 错误，无 field_filters，BinderException 处理与 query 一致。
+        hints.candidate_fields 应包含文件实际存在的列。
+        """
+        result = run_async(srv.call_tool("summary", {"source": "svc-broken"}))
+        data = _json(result)
+        _assert_error_schema(data, srv.ERROR_FIELD_NOT_FOUND)
+        candidates = data["hints"].get("candidate_fields", [])
+        assert isinstance(candidates, list), "candidate_fields 应为列表"
+        assert len(candidates) > 0, f"summary handler 候选列表不应为空，实际: {candidates}"
+        assert "message" in candidates, f"observed 列 'message' 应在候选中，实际: {candidates}"

@@ -5,6 +5,7 @@ MCP Server 定义：注册 6 个 tools，路由到各处理函数。
 import difflib
 import json
 import logging
+import re
 from datetime import timezone
 from pathlib import Path
 
@@ -404,7 +405,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     except duckdb.BinderException as e:
         # 字段引用失败：返回 field_not_found，并用 difflib 给出候选
         err_msg = str(e)
-        # 从 field_filters 中提取被引用的字段名（尽力而为）
+
+        # --- bad_field 推导（按优先级）---
+        # 1. 优先从 field_filters 的第一个 key 取（调用方明确传了字段名）
         bad_field = ""
         filters = arguments.get("field_filters") or {}
         if isinstance(filters, dict):
@@ -427,11 +430,33 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 observed_fields = [desc[0] for desc in probe_result.description]
             else:
                 observed_fields = []
-            # 合并：原始观察到的列名 + field_map 中配置的原始列名（values），去重
+
+            # 2. field_filters 无字段时，从 BinderException 消息正则提取缺失列名
+            #    DuckDB 错误格式：Referenced column "col_name" not found in FROM clause!
+            if not bad_field:
+                m = re.search(r'Referenced column "([^"]+)"', err_msg)
+                if m:
+                    bad_field = m.group(1)
+
+            # 3. 若正则也无法提取，退而从 field_map.values() 中找不存在于 observed_fields 的项
+            #    这些是真正配置错误的 field_map 条目
+            if not bad_field:
+                observed_set = set(observed_fields)
+                broken_map_fields = [v for v in field_map.values() if v not in observed_set]
+                if broken_map_fields:
+                    bad_field = broken_map_fields[0]
+
+            # 候选池 = observed_fields ∪ field_map.values()（去重）
             field_map_values = list(field_map.values())
             all_fields = list(dict.fromkeys(observed_fields + field_map_values))
+
             if bad_field:
                 candidates = _get_close_field_matches(bad_field, all_fields)
+
+            # 4. 兜底：bad_field 仍为空时，将 observed_fields 前 3 个作为"已观察列"hints 返回
+            if not candidates and observed_fields:
+                candidates = observed_fields[:3]
+
         except Exception:
             # probe 查询失败（文件缺失等）时安全回退：仅用 field_map values 作候选
             try:
@@ -439,8 +464,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 cfg = registry.get(source_name)
                 field_map = cfg.get("field_map") or {}
                 known_fields = list(field_map.values())
+                # 2b. 正则提取兜底（probe 失败场景同样尝试）
+                if not bad_field:
+                    m = re.search(r'Referenced column "([^"]+)"', err_msg)
+                    if m:
+                        bad_field = m.group(1)
                 if bad_field:
                     candidates = _get_close_field_matches(bad_field, known_fields)
+                # 无候选时返回 field_map values 前 3 个作为提示
+                if not candidates and known_fields:
+                    candidates = known_fields[:3]
             except Exception:
                 pass
 
