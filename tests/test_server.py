@@ -941,3 +941,48 @@ class TestCrossQueryUnionTimeline:
         assert len(data["entries"]) > 0
         for entry in data["entries"]:
             assert set(entry.keys()) == {"_timestamp", "_source", "_message"}
+
+
+# ---------------------------------------------------------------------------
+# change: rewrite-tool-descriptions-when-to-use
+# Task 2.1 & 2.2：验证 7 个 tool description 内容与字符长度
+# ---------------------------------------------------------------------------
+
+# tasks.md 定义的精确文案
+_EXPECTED_DESCRIPTIONS = {
+    "list_sources":       "首次进入项目时调用：发现可查询的日志源、确认文件状态",
+    "query":              "已知过滤条件时使用：按级别 / 字段 / 时间窗口精确检索，支持分页",
+    "tail":               "快速看最新动态：诊断刚发生的问题，比 query 省参数",
+    "summary":            "判断服务健康状况：错误率、分位数、趋势；代码变更后第一次检查首选",
+    "cross_query":        "重建跨源调用时间线：用 correlation_id 等共享字段串起多服务事件",
+    "register_source":    "临时排障引入新源：可选 persist 持久化",
+    "unregister_source":  "清理不再需要的源：可选 persist 同步删除",
+}
+
+
+class TestToolDescriptions:
+    """验证 7 个 tool description 与 tasks 规格精确一致，且每条 ≤50 字符。"""
+
+    def _tool_desc_map(self) -> dict[str, str]:
+        """从 _TOOLS 构建 name -> description 映射。"""
+        return {t.name: t.description for t in srv._TOOLS}
+
+    def test_descriptions_match_tasks_specification(self):
+        """逐条 assert tool description 与 tasks.md 定义完全一致。"""
+        desc_map = self._tool_desc_map()
+        for tool_name, expected in _EXPECTED_DESCRIPTIONS.items():
+            actual = desc_map.get(tool_name)
+            assert actual == expected, (
+                f"tool={tool_name!r} description 不匹配\n"
+                f"  期望: {expected!r}\n"
+                f"  实际: {actual!r}"
+            )
+
+    def test_descriptions_under_50_characters(self):
+        """每条 description 长度 len(s) ≤ 50（中文字符计为 1）。"""
+        desc_map = self._tool_desc_map()
+        for tool_name in _EXPECTED_DESCRIPTIONS:
+            desc = desc_map.get(tool_name, "")
+            assert len(desc) <= 50, (
+                f"tool={tool_name!r} description 超过 50 字符（实际 {len(desc)} 字符）: {desc!r}"
+            )

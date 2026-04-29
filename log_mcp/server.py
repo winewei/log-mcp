@@ -89,12 +89,12 @@ def _get_close_field_matches(field_name: str, available_fields: list[str]) -> li
 _TOOLS = [
     Tool(
         name="list_sources",
-        description="列出所有已注册的日志源及其状态（文件是否存在、大小、最近修改时间）",
+        description="首次进入项目时调用：发现可查询的日志源、确认文件状态",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
         name="query",
-        description="按条件过滤日志条目，支持级别、正则、任意字段、时间范围过滤",
+        description="已知过滤条件时使用：按级别 / 字段 / 时间窗口精确检索，支持分页",
         inputSchema={
             "type": "object",
             "properties": {
@@ -116,7 +116,7 @@ _TOOLS = [
     ),
     Tool(
         name="tail",
-        description="从文件末尾反向读取最新日志，最快速的实时查看方式",
+        description="快速看最新动态：诊断刚发生的问题，比 query 省参数",
         inputSchema={
             "type": "object",
             "properties": {
@@ -131,7 +131,7 @@ _TOOLS = [
     ),
     Tool(
         name="summary",
-        description="聚合统计指定时间窗口内的日志，快速判断服务健康状况",
+        description="判断服务健康状况：错误率、分位数、趋势；代码变更后第一次检查首选",
         inputSchema={
             "type": "object",
             "properties": {
@@ -156,7 +156,7 @@ _TOOLS = [
     ),
     Tool(
         name="register_source",
-        description="动态注册新的日志源，可选择是否持久化写入 sources.yaml",
+        description="临时排障引入新源：可选 persist 持久化",
         inputSchema={
             "type": "object",
             "properties": {
@@ -176,7 +176,7 @@ _TOOLS = [
     ),
     Tool(
         name="unregister_source",
-        description="注销已注册的日志源，可选择是否从 sources.yaml 中删除",
+        description="清理不再需要的源：可选 persist 同步删除",
         inputSchema={
             "type": "object",
             "properties": {
@@ -188,7 +188,7 @@ _TOOLS = [
     ),
     Tool(
         name="cross_query",
-        description="跨源关联查询，通过指定字段（如 correlation_id）对多个日志源执行 JOIN",
+        description="重建跨源调用时间线：用 correlation_id 等共享字段串起多服务事件",
         inputSchema={
             "type": "object",
             "properties": {
