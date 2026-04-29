@@ -451,13 +451,14 @@ class TestCrossQuery:
         assert "run-002" not in corr_ids
 
     def test_invalid_join_field(self, cross_query_sources):
-        # 非白名单字段应返回错误
+        # 非白名单字段应抛出 JoinFieldNotAllowed（由 engine 层 raise，server 层捕获映射）
+        from log_mcp.engine import JoinFieldNotAllowed
         cfgs = cross_query_sources
-        result = cross_query(
-            sources_cfg=cfgs,
-            join_field="malicious_field",
-        )
-        assert "error" in result
+        with pytest.raises(JoinFieldNotAllowed):
+            cross_query(
+                sources_cfg=cfgs,
+                join_field="malicious_field",
+            )
 
     def test_cross_query_with_level(self, cross_query_sources):
         # level=error 过滤后，只有 api 的 auth_failed 满足

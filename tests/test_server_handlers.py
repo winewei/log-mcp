@@ -256,9 +256,10 @@ class TestSourceLifecycleHandlers:
             "format": "invalid",
         }))
         data = _json(result)
-        assert "error" in data
-        # call_tool 的 Exception 分支会带 detail 字段
+        # 新结构化错误 schema：error_code=internal_error，detail 含错误说明
+        assert data.get("error_code") == srv.ERROR_INTERNAL
         assert "format" in data.get("detail", "") or "invalid" in data.get("detail", "")
+        assert "error" not in data  # 旧字段不存在
         # 注册失败 → registry 无该源
         with pytest.raises(KeyError):
             empty_registry.get("bad")
@@ -288,8 +289,10 @@ class TestSourceLifecycleHandlers:
     def test_unregister_source_missing_wrapped_by_call_tool(self, empty_registry):
         result = run_async(srv.call_tool("unregister_source", {"name": "ghost"}))
         data = _json(result)
-        assert "error" in data
-        assert "ghost" in data["error"]
+        # 新结构化错误 schema：error_code=source_not_found
+        assert data.get("error_code") == srv.ERROR_SOURCE_NOT_FOUND
+        assert "ghost" in data.get("detail", "")
+        assert "error" not in data  # 旧字段不存在
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +318,10 @@ class TestQueryHandlers:
     def test_query_missing_source_wrapped(self, empty_registry):
         result = run_async(srv.call_tool("query", {"source": "ghost"}))
         data = _json(result)
-        assert "error" in data
-        assert "ghost" in data["error"]
+        # 新结构化错误 schema：error_code=source_not_found
+        assert data.get("error_code") == srv.ERROR_SOURCE_NOT_FOUND
+        assert "ghost" in data.get("detail", "")
+        assert "error" not in data  # 旧字段不存在
 
     def test_query_limit_is_clamped_to_500(self, registry_with_sources, monkeypatch):
         captured = {}
@@ -342,7 +347,10 @@ class TestQueryHandlers:
 
     def test_tail_missing_source_wrapped(self, empty_registry):
         result = run_async(srv.call_tool("tail", {"source": "ghost"}))
-        assert "error" in _json(result)
+        data = _json(result)
+        # 新结构化错误 schema：error_code=source_not_found
+        assert data.get("error_code") == srv.ERROR_SOURCE_NOT_FOUND
+        assert "error" not in data  # 旧字段不存在
 
     def test_summary_basic_shape(self, registry_with_sources):
         result = run_async(srv._handle_summary({
@@ -404,7 +412,11 @@ class TestQueryHandlers:
             "sources": ["test-api"],
             "join_field": "correlation_id",
         }))
-        assert _json(result) == {"error": "sources 至少需要 2 个日志源"}
+        # 新结构化错误 schema：error_code=internal_error，detail 含说明
+        data = _json(result)
+        assert data.get("error_code") == srv.ERROR_INTERNAL
+        assert "2" in data.get("detail", "") or "两" in data.get("detail", "")
+        assert "error" not in data  # 旧字段不存在
         assert called["cross_query"] is False
 
     def test_cross_query_missing_source_wrapped(self, empty_registry):
@@ -413,8 +425,10 @@ class TestQueryHandlers:
             "join_field": "correlation_id",
         }))
         data = _json(result)
-        assert "error" in data
-        assert "ghost" in data["error"]
+        # 新结构化错误 schema：error_code=source_not_found
+        assert data.get("error_code") == srv.ERROR_SOURCE_NOT_FOUND
+        assert "ghost" in data.get("detail", "")
+        assert "error" not in data  # 旧字段不存在
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,11 @@ from pathlib import Path
 
 import duckdb
 
+
+class JoinFieldNotAllowed(ValueError):
+    """cross_query 的 join_field 不在白名单时抛出此异常。"""
+    pass
+
 # 模块级连接复用，避免每次查询重建连接
 _conn: duckdb.DuckDBPyConnection | None = None
 
@@ -506,7 +511,9 @@ def cross_query(
     返回 {"entries": list[dict]}，每条记录按 _timestamp 排序。
     """
     if join_field not in _ALLOWED_JOIN_FIELDS:
-        return {"error": f"join_field '{join_field}' 不在白名单中，允许: {', '.join(sorted(_ALLOWED_JOIN_FIELDS))}"}
+        raise JoinFieldNotAllowed(
+            f"join_field '{join_field}' 不在白名单中，允许: {', '.join(sorted(_ALLOWED_JOIN_FIELDS))}"
+        )
 
     source_names = list(sources_cfg.keys())
     if len(source_names) < 2:

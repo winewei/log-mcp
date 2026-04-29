@@ -2,17 +2,26 @@
 MCP Server 定义：注册 6 个 tools，路由到各处理函数。
 """
 
+import difflib
 import json
 import logging
 from datetime import timezone
 from pathlib import Path
 
+import duckdb
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .config import SourceRegistry
-from .engine import cross_query, query_entries, tail_entries, summarize_entries
+from .engine import (
+    JoinFieldNotAllowed,
+    _ALLOWED_JOIN_FIELDS,
+    cross_query,
+    query_entries,
+    tail_entries,
+    summarize_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +29,53 @@ logger = logging.getLogger(__name__)
 registry: SourceRegistry = SourceRegistry()
 
 server = Server("log-mcp")
+
+
+# ---------------------------------------------------------------------------
+# 错误响应常量与构造函数
+# ---------------------------------------------------------------------------
+
+# error_code 枚举常量
+ERROR_SOURCE_NOT_FOUND = "source_not_found"
+ERROR_FIELD_NOT_FOUND = "field_not_found"
+ERROR_TIME_PARSE_ERROR = "time_parse_error"
+ERROR_JOIN_FIELD_NOT_ALLOWED = "join_field_not_allowed"
+ERROR_INTERNAL = "internal_error"
+
+# time_parse_error 的合法示例
+_TIME_EXAMPLES = ["30s", "5m", "1h", "1d", "2026-04-29T12:00:00Z"]
+
+
+def _make_error(
+    code: str,
+    detail: str,
+    suggestion: str,
+    hints: dict | None = None,
+) -> dict:
+    """
+    构造结构化错误响应字典。
+    :param code:       error_code 枚举值之一
+    :param detail:     人类可读的中文错误说明
+    :param suggestion: 单句可执行的修复动作
+    :param hints:      结构化字典，便于 Agent 程序化解析
+    """
+    return {
+        "error_code": code,
+        "detail": detail,
+        "suggestion": suggestion,
+        "hints": hints or {},
+    }
+
+
+def _error_response(code: str, detail: str, suggestion: str, hints: dict | None = None) -> list[TextContent]:
+    """将 _make_error 结果包装为 TextContent 列表。"""
+    payload = _make_error(code, detail, suggestion, hints)
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
+
+def _get_close_field_matches(field_name: str, available_fields: list[str]) -> list[str]:
+    """使用 difflib 在已知字段名中找最近似的候选，最多返回 3 个。"""
+    return difflib.get_close_matches(field_name, available_fields, n=3, cutoff=0.3)
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +314,12 @@ async def _handle_unregister_source(args: dict) -> list[TextContent]:
 async def _handle_cross_query(args: dict) -> list[TextContent]:
     source_names = args["sources"]
     if len(source_names) < 2:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": "sources 至少需要 2 个日志源"}, ensure_ascii=False))]
+        return _error_response(
+            ERROR_INTERNAL,
+            "sources 至少需要 2 个日志源",
+            "请在 sources 列表中提供至少 2 个日志源名称",
+            {"provided_count": len(source_names)},
+        )
 
     sources_cfg = {}
     for name in source_names:
@@ -286,7 +346,7 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """将 tool 调用路由到对应处理函数，统一捕获异常。"""
+    """将 tool 调用路由到对应处理函数，统一捕获异常并返回结构化错误响应。"""
     handlers = {
         "list_sources": _handle_list_sources,
         "query": _handle_query,
@@ -304,12 +364,79 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         return await handler(arguments)
     except KeyError as e:
-        error = {"error": str(e)}
-        return [TextContent(type="text", text=json.dumps(error, ensure_ascii=False))]
+        # registry.get 未命中：返回 source_not_found
+        available = list(registry.list().keys())
+        return _error_response(
+            ERROR_SOURCE_NOT_FOUND,
+            f"日志源不存在: {e}",
+            "请调用 list_sources 查看可用源，或调用 register_source 注册新源",
+            {"available_sources": available},
+        )
+    except JoinFieldNotAllowed as e:
+        # cross_query join_field 不在白名单：返回 join_field_not_allowed
+        return _error_response(
+            ERROR_JOIN_FIELD_NOT_ALLOWED,
+            str(e),
+            f"请使用白名单中的字段作为 join_field，可选值: {sorted(_ALLOWED_JOIN_FIELDS)}",
+            {"allowed_join_fields": sorted(_ALLOWED_JOIN_FIELDS)},
+        )
+    except ValueError as e:
+        # _parse_time 解析失败（time_parse_error），也兜住其他 ValueError
+        err_msg = str(e)
+        if "无法解析时间表达式" in err_msg:
+            return _error_response(
+                ERROR_TIME_PARSE_ERROR,
+                err_msg,
+                "请使用 ISO 8601 格式（如 2026-04-29T12:00:00Z）或相对值（如 30s/5m/1h/1d）",
+                {"valid_examples": _TIME_EXAMPLES},
+            )
+        # 其他 ValueError（如 register_source 参数校验）归为 internal_error
+        logger.exception("tool '%s' 执行失败（ValueError）", name)
+        return _error_response(
+            ERROR_INTERNAL,
+            err_msg,
+            "请检查参数合法性后重试",
+            {"exception_type": type(e).__name__},
+        )
+    except duckdb.BinderException as e:
+        # 字段引用失败：返回 field_not_found，并用 difflib 给出候选
+        err_msg = str(e)
+        # 从错误消息中提取被引用的字段名（尽力而为）
+        bad_field = ""
+        for arg_key in ("field_filters",):
+            filters = arguments.get(arg_key) or {}
+            if isinstance(filters, dict):
+                bad_field = next(iter(filters.keys()), "")
+                break
+
+        # 获取该源已观察的字段名作为近似匹配候选
+        candidates: list[str] = []
+        try:
+            source_name = arguments.get("source", "")
+            cfg = registry.get(source_name)
+            field_map = cfg.get("field_map") or {}
+            # 标准化字段 + 映射后字段均纳入候选
+            known_fields = list(field_map.values()) + ["_timestamp", "_level", "_message", "_source"]
+            if bad_field:
+                candidates = _get_close_field_matches(bad_field, known_fields)
+        except Exception:
+            pass
+
+        return _error_response(
+            ERROR_FIELD_NOT_FOUND,
+            f"字段引用失败: {err_msg}",
+            "请检查 field_filters 中的字段名是否正确，或调用 list_sources 查看实际 schema",
+            {"candidate_fields": candidates, "duckdb_error": err_msg},
+        )
     except Exception as e:
+        # 兜底：未预期异常归为 internal_error
         logger.exception("tool '%s' 执行失败", name)
-        error = {"error": type(e).__name__, "detail": str(e)}
-        return [TextContent(type="text", text=json.dumps(error, ensure_ascii=False))]
+        return _error_response(
+            ERROR_INTERNAL,
+            f"内部错误: {type(e).__name__}: {e}",
+            "请检查日志获取详细堆栈，必要时联系维护者",
+            {"exception_type": type(e).__name__},
+        )
 
 
 # ---------------------------------------------------------------------------
