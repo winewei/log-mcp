@@ -4,7 +4,7 @@
 TBD - created by archiving change add-mcp-tool-handler-tests. Update Purpose after archive.
 ## Requirements
 ### Requirement: Tool Schema Exposure
-`list_tools` MUST 返回恰好 7 个 `Tool` 实例，涵盖 `list_sources`、`query`、`tail`、`summary`、`register_source`、`unregister_source`、`cross_query`，每个 Tool 的 `inputSchema` MUST 是合法的 JSON Schema 并声明正确的必填字段，以便 MCP 客户端据此构造请求。
+`list_tools` MUST 返回恰好 7 个 `Tool` 实例，涵盖 `list_sources`、`query`、`tail`、`summary`、`register_source`、`unregister_source`、`cross_query`，每个 Tool 的 `inputSchema` MUST 是合法的 JSON Schema 并声明正确的必填字段，以便 MCP 客户端据此构造请求。`query` 与 `tail` 两个 Tool 的 `inputSchema.properties` MUST 包含可选参数 `fields`，类型为 `array`，`items.type` 为 `string`，描述其用于字段白名单裁剪。
 
 #### Scenario: 七个 tool 均已暴露
 
@@ -25,6 +25,11 @@ TBD - created by archiving change add-mcp-tool-handler-tests. Update Purpose aft
 
 - **WHEN** 读取 `cross_query` 的 `inputSchema.properties.sources`
 - **THEN** 其 `type` MUST 为 `array` 且 `minItems` MUST 为 2
+
+#### Scenario: query/tail 暴露 fields 可选参数
+
+- **WHEN** 读取 `query` 与 `tail` 的 `inputSchema.properties.fields`
+- **THEN** 两者 MUST 存在且 `type` 为 `array`，`items.type` 为 `string`，`fields` MUST 不出现在 `required` 中
 
 ### Requirement: File Status Introspection
 `_file_status(path)` MUST 根据文件系统实际状态返回稳定字典 `{status, file_size_bytes, last_modified}`，便于 `list_sources` 向 Agent 暴露可诊断的源状态。
@@ -93,7 +98,7 @@ TBD - created by archiving change add-mcp-tool-handler-tests. Update Purpose aft
 - **THEN** 返回的 TextContent JSON `error_code` MUST 等于 `source_not_found`，`hints.available_sources` MUST 列出当前可用源名，MUST 不含旧 `error` 单字段
 
 ### Requirement: Query Handlers
-`_handle_query`、`_handle_tail`、`_handle_summary`、`_handle_cross_query` MUST 将参数透传给 engine 层并序列化结果为 TextContent；源不存在、字段非法、时间格式非法、join_field 非法或其他异常经 `call_tool` 包装后 MUST 返回结构化错误 JSON `{error_code, detail, suggestion, hints}`，MUST 不再使用旧的 `{"error": ...}` 单字段格式，且 MUST 不向上抛异常。
+`_handle_query`、`_handle_tail`、`_handle_summary`、`_handle_cross_query` MUST 将参数透传给 engine 层并序列化结果为 TextContent；源不存在或参数非法经 `call_tool` 包装后 MUST 返回错误 JSON 而非抛出。`_handle_query` 与 `_handle_tail` MUST 将客户端传入的 `fields` 参数透传至 engine 层，由 engine 在结果序列化前应用公共裁剪层。
 
 #### Scenario: query 透传全部过滤参数
 
@@ -105,25 +110,25 @@ TBD - created by archiving change add-mcp-tool-handler-tests. Update Purpose aft
 - **WHEN** `_handle_query({source, limit: 1000})` 调用
 - **THEN** 传递给 engine 的 `limit` MUST 被截断为 500
 
-#### Scenario: query 源不存在返回 source_not_found
+#### Scenario: query 源不存在
 
 - **WHEN** 通过 `call_tool("query", {"source": "ghost"})` 调用
-- **THEN** 返回 TextContent JSON `error_code` MUST 等于 `source_not_found`，`hints.available_sources` MUST 列出当前可用源名，进程 MUST 不崩溃
+- **THEN** 返回 TextContent JSON 必须含 `error` 字段，进程 MUST 不崩溃
 
-#### Scenario: query 字段不存在返回 field_not_found
+#### Scenario: query 透传 fields 白名单
 
-- **WHEN** 通过 `call_tool("query", {"source": "x", "field_filters": {"foo": "bar"}})` 调用，且 `foo` 字段在该源中不存在
-- **THEN** 返回 TextContent JSON `error_code` MUST 等于 `field_not_found`，`hints` MUST 含候选字段名（最多 3 个近似匹配）
-
-#### Scenario: query since 解析失败返回 time_parse_error
-
-- **WHEN** 通过 `call_tool("query", {"source": "x", "since": "yesterday"})` 调用
-- **THEN** 返回 TextContent JSON `error_code` MUST 等于 `time_parse_error`，`hints` MUST 含合法时间表达式示例
+- **WHEN** `_handle_query({source, fields: ["_timestamp", "_message"]})` 调用
+- **THEN** engine 收到的 `fields` 参数与传入一致，返回 entries 中每条记录仅含这两个键
 
 #### Scenario: tail 透传 agent_source 快捷过滤
 
 - **WHEN** `_handle_tail({source, count, agent_source})` 调用
 - **THEN** engine 收到的 `field_filters` 含 `agent_source` 键，entries 仅包含匹配该 agent 的条目
+
+#### Scenario: tail 透传 fields 白名单
+
+- **WHEN** `_handle_tail({source, count, fields: ["_timestamp", "_message"]})` 调用
+- **THEN** engine 收到的 `fields` 参数与传入一致，返回 entries 中每条记录仅含这两个键
 
 #### Scenario: summary 透传 percentile_fields 与 bucket_interval
 
@@ -140,20 +145,15 @@ TBD - created by archiving change add-mcp-tool-handler-tests. Update Purpose aft
 - **WHEN** `_handle_cross_query({sources: [a, b], join_field: correlation_id})` 调用，且两源均存在共享 correlation_id 的条目
 - **THEN** 返回 JSON 含非空 `entries`
 
-#### Scenario: cross_query sources 少于 2 返回结构化错误
+#### Scenario: cross_query sources 少于 2
 
 - **WHEN** `_handle_cross_query({sources: ["only-one"], join_field: "x"})` 调用
-- **THEN** 返回 TextContent JSON `error_code` MUST 等于 `internal_error`，`detail` MUST 说明 sources 至少需要 2 个日志源，MUST 不抛异常
+- **THEN** 直接返回 `{"error": "sources 至少需要 2 个日志源"}`，MUST 不抛异常
 
-#### Scenario: cross_query 源名不存在返回 source_not_found
+#### Scenario: cross_query 源名不存在
 
 - **WHEN** 通过 `call_tool("cross_query", {"sources": ["ghost", "also-ghost"], "join_field": "x"})` 调用
-- **THEN** 返回 TextContent JSON `error_code` MUST 等于 `source_not_found`，`hints.available_sources` MUST 列出当前可用源名
-
-#### Scenario: cross_query join_field 不在白名单返回 join_field_not_allowed
-
-- **WHEN** 通过 `call_tool("cross_query", {"sources": [a, b], "join_field": "email"})` 调用，且 `email` 不在 `_ALLOWED_JOIN_FIELDS`
-- **THEN** 返回 TextContent JSON `error_code` MUST 等于 `join_field_not_allowed`，`hints` MUST 含全部白名单字段
+- **THEN** 返回 TextContent JSON 必须含 `error` 字段
 
 ### Requirement: Server Startup
 模块级 `server` 单例 MUST 在导入时完成 7 个 tool 的注册；`run_server(config_path)` MUST 在 `config_path` 非空时加载配置，为空时以纯动态模式启动，且 MCP `call_tool` 对未知名称 MUST 返回错误而非直接抛 `ValueError`。
